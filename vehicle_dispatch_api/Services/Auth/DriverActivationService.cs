@@ -1,6 +1,10 @@
-﻿using System.Security.Cryptography;
+﻿
+using System.Linq;
+using System.Security.Cryptography;
 using System.Text;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
+
 using vehicle_dispatch_api.Data;
 using vehicle_dispatch_api.DTOs.Auth;
 using vehicle_dispatch_api.Models.Auth;
@@ -11,134 +15,267 @@ namespace vehicle_dispatch_api.Services.Auth
     {
         private readonly ApplicationDbContext _db;
         private readonly DriverPasswordService _passwordService;
-
-        // 初始密碼或開通碼任一驗證錯誤，都計入開通失敗次數。
-        private const int MaxActivationAttempts = 5;
+        private readonly ILogger<DriverActivationService> _logger;
 
         public DriverActivationService(
             ApplicationDbContext db,
-            DriverPasswordService passwordService)
+            DriverPasswordService passwordService,
+            ILogger<DriverActivationService> logger)
         {
             _db = db;
             _passwordService = passwordService;
+            _logger = logger;
         }
 
-        public async Task<bool> ActivateAsync(
+        // ==========================================
+        // 司機首次開通
+        // ==========================================
+
+        public async Task<ActivateDriverResponse?> ActivateAsync(
             ActivateDriverRequest request,
             CancellationToken cancellationToken = default)
         {
+            _logger.LogInformation(
+                "Driver activation service started.");
+
+            // ==========================================
             // 1. 基本資料檢查
+            // ==========================================
 
-            var loginId = request.LoginId?.Trim() ?? string.Empty;
+            ArgumentNullException.ThrowIfNull(request);
 
-            // Base36 不區分大小寫：
-            // 管理者端與 API 皆先 Trim，再轉成大寫，最後以 UTF-8 計算 SHA256。
-            var activationCode =
-                request.ActivationCode?.Trim().ToUpperInvariant()
-                ?? string.Empty;
+            var loginId = request.LoginId?.Trim() ?? "";
 
-            // 密碼不可 Trim，空白可能是密碼本身的一部分。
-            var initialPassword = request.InitialPassword ?? string.Empty;
-            var newPassword = request.NewPassword ?? string.Empty;
+            // 密碼不可 Trim，避免改變使用者輸入內容
+            var initialPassword = request.InitialPassword ?? "";
+            var newPassword = request.NewPassword ?? "";
+
+            // 統一正規化開通碼
+            var activationCode = NormalizeActivationCode(
+                request.ActivationCode
+            );
+
+            var publicKey = request.PublicKey?.Trim() ?? "";
 
             if (loginId.Length == 0 || loginId.Length > 100)
-                throw new ArgumentException("登入帳號格式不正確");
+                return Reject("Input", "LoginIdInvalid");
 
-            // 開通碼：16 位 Base36，允許 0-9、A-Z。
-            if (activationCode.Length != 16 ||
-                !activationCode.All(char.IsAsciiLetterOrDigit))
-            {
-                return false;
-            }
-
-            // 初始密碼長度限制，需與管理者頁面產生規格相容。
-            if (string.IsNullOrWhiteSpace(initialPassword) ||
-                initialPassword.Length < 12 ||
+            if (initialPassword.Length == 0 ||
                 initialPassword.Length > 128)
+                return Reject("Input", "InitialPasswordInvalid");
+
+            if (newPassword.Length < 8 ||
+                newPassword.Length > 128)
+                return Reject("Input", "NewPasswordInvalid");
+
+            // ==========================================
+            // 2. 驗證開通碼格式
+            // ==========================================
+
+            // 16 位 Base36：0-9、A-Z
+
+            bool validCodeFormat =
+                activationCode.Length == 16 &&
+                activationCode.All(c =>
+                    (c >= '0' && c <= '9') ||
+                    (c >= 'A' && c <= 'Z'));
+
+            if (!validCodeFormat)
+                return Reject("ActivationCode", "CodeFormatInvalid");
+
+            // ==========================================
+            // 3. 驗證手機平台
+            // ==========================================
+
+            string platform;
+
+            if (string.Equals(
+                request.Platform?.Trim(),
+                "Android",
+                StringComparison.OrdinalIgnoreCase))
             {
-                throw new ArgumentException(
-                    "初始密碼長度必須介於 12 至 128 個字元");
+                platform = "Android";
+            }
+            else if (string.Equals(
+                request.Platform?.Trim(),
+                "iOS",
+                StringComparison.OrdinalIgnoreCase))
+            {
+                platform = "iOS";
+            }
+            else
+            {
+                return Reject("Platform", "PlatformInvalid");
             }
 
-            // 司機自行設定的正式密碼長度限制。
-            if (string.IsNullOrWhiteSpace(newPassword) ||
-                newPassword.Length < 12 ||
-                newPassword.Length > 128)
+            // ==========================================
+            // 4. 驗證手機公鑰格式
+            // ==========================================
+
+            if (publicKey.Length < 80 ||
+                publicKey.Length > 2048)
             {
-                throw new ArgumentException(
-                    "新密碼長度必須介於 12 至 128 個字元");
+                return Reject("PublicKey", "PublicKeyLengthInvalid");
             }
+
+            if (!IsValidP256PublicKey(publicKey))
+            {
+                return Reject("PublicKey", "PublicKeyInvalid");
+            }
+
+            // ==========================================
+            // 5. 查詢司機帳號
+            // ==========================================
 
             var now = DateTime.UtcNow;
 
-            // 2. 查詢司機帳號
             var driver = await _db.DriverAppAccounts
+                .AsNoTracking()
                 .FirstOrDefaultAsync(
                     x => x.LoginId == loginId,
                     cancellationToken);
 
-            // 不存在的帳號不透露詳細原因。
             if (driver == null)
-                return false;
+                return Reject("Account", "DriverNotFound");
 
-            // 3. 確認帳號狀態
+            // 只能開通尚未開通的帳號
             if (driver.AccountStatus != "PendingActivation")
-                return false;
+                return Reject("Account", "AccountStatusInvalid");
 
-            // 4. 確認開通碼是否存在及是否過期
-            if (string.IsNullOrEmpty(driver.ActivationTokenHash) ||
-                !driver.ActivationExpiresAt.HasValue ||
-                driver.ActivationExpiresAt.Value <= now)
+            // ==========================================
+            // 6. 驗證管理員提供的初始密碼
+            // ==========================================
+
+            bool passwordValid = _passwordService.VerifyPassword(
+                driver,
+                initialPassword);
+
+            if (!passwordValid)
             {
-                return false;
+                return Reject(
+                    "Password",
+                    "InitialPasswordVerificationFailed");
             }
 
-            // 已達最大失敗次數，必須由管理員重新發送開通碼。
-            if (driver.ActivationFailedAttempts >= MaxActivationAttempts)
-                return false;
+            // ==========================================
+            // 7. 檢查開通碼有效期限
+            // ==========================================
 
-            // 5. 驗證管理者預先設定的初始密碼
-            // DB passwordhash 是由管理者頁面使用 PasswordHasher Hash 後寫入。
-            // API 使用 VerifyHashedPassword 驗證，不可直接重新 Hash 比對。
-            bool isInitialPasswordValid =
-                _passwordService.VerifyPassword(driver, initialPassword);
-
-            // 6. 驗證 16 位 Base36 開通碼的 SHA256
-            bool isActivationCodeValid = VerifyActivationCode(
-                activationCode,
-                driver.ActivationTokenHash);
-
-            // 初始密碼或開通碼任一錯誤，都增加失敗次數。
-            if (!isInitialPasswordValid || !isActivationCodeValid)
+            if (string.IsNullOrWhiteSpace(driver.ActivationTokenHash))
             {
-                await RegisterFailedAttemptAsync(
+                return Reject(
+                    "ActivationCode",
+                    "TokenHashMissing");
+            }
+
+            if (!driver.ActivationExpiresAt.HasValue)
+            {
+                return Reject(
+                    "ActivationCode",
+                    "ExpiryMissing");
+            }
+
+            if (driver.ActivationExpiresAt.Value <= now)
+            {
+                return Reject(
+                    "ActivationCode",
+                    "Expired");
+            }
+
+            // ==========================================
+            // 8. SHA256 驗證開通碼
+            // ==========================================
+
+            byte[] inputHash = SHA256.HashData(
+                Encoding.UTF8.GetBytes(activationCode));
+
+            byte[] storedHash;
+
+            try
+            {
+                storedHash = Convert.FromHexString(
+                    driver.ActivationTokenHash.Trim());
+            }
+            catch (FormatException)
+            {
+                return Reject(
+                    "ActivationCode",
+                    "StoredHashInvalid");
+            }
+
+            if (storedHash.Length != inputHash.Length)
+            {
+                return Reject(
+                    "ActivationCode",
+                    "StoredHashLengthInvalid");
+            }
+
+            bool activationValid =
+                CryptographicOperations.FixedTimeEquals(
+                    inputHash,
+                    storedHash);
+
+            if (!activationValid)
+            {
+                return Reject(
+                    "ActivationCode",
+                    "HashMismatch");
+            }
+
+            // ==========================================
+            // 9. 產生正式密碼 Hash
+            // ==========================================
+
+            string newPasswordHash =
+                _passwordService.HashPassword(
                     driver,
-                    now,
+                    newPassword);
+
+            // ==========================================
+            // 10. 建立手機設備資料
+            // ==========================================
+
+            var phone = new DriverAppPhone
+            {
+                PhoneId = Guid.NewGuid(),
+
+                DriverId = driver.DriverId,
+
+                Platform = platform,
+
+                Status = "Bound",
+
+                PublicKey = publicKey,
+
+                CreatedAt = now,
+
+                RevokedAt = null
+            };
+
+            // ==========================================
+            // 11. 開始 Transaction
+            // ==========================================
+
+            await using var transaction =
+                await _db.Database.BeginTransactionAsync(
                     cancellationToken);
 
-                return false;
-            }
+            // ==========================================
+            // 12. 更新司機帳號
+            // ==========================================
 
-            // 7. 兩項驗證均成功，產生司機正式密碼 Hash
-            var newPasswordHash = _passwordService.HashPassword(
-                driver,
-                newPassword);
+            // 再次確認帳號狀態、開通碼及密碼 Hash
+            // 防止同一組開通碼被重複使用
 
-            // 8. 原子性更新帳號
-            // 再次確認狀態、開通碼、密碼 Hash 及期限仍與剛才讀取時相同，
-            // 避免管理員同時重設資料，或同一組開通碼被重複使用。
             var affectedRows = await _db.DriverAppAccounts
                 .Where(x =>
                     x.DriverId == driver.DriverId &&
                     x.AccountStatus == "PendingActivation" &&
-                    x.PasswordHash == driver.PasswordHash &&
                     x.ActivationTokenHash == driver.ActivationTokenHash &&
                     x.ActivationExpiresAt > now &&
-                    x.ActivationFailedAttempts < MaxActivationAttempts)
+                    x.PasswordHash == driver.PasswordHash)
                 .ExecuteUpdateAsync(setters => setters
 
-                    // 將管理者設定的初始密碼 Hash
-                    // 替換成司機自行設定的正式密碼 Hash。
                     .SetProperty(
                         x => x.PasswordHash,
                         newPasswordHash)
@@ -147,7 +284,6 @@ namespace vehicle_dispatch_api.Services.Auth
                         x => x.AccountStatus,
                         "Active")
 
-                    // 開通成功後，一次性開通碼立即失效。
                     .SetProperty(
                         x => x.ActivationTokenHash,
                         (string?)null)
@@ -155,10 +291,6 @@ namespace vehicle_dispatch_api.Services.Auth
                     .SetProperty(
                         x => x.ActivationExpiresAt,
                         (DateTime?)null)
-
-                    .SetProperty(
-                        x => x.ActivationFailedAttempts,
-                        0)
 
                     .SetProperty(
                         x => x.FailedLoginAttempts,
@@ -174,91 +306,129 @@ namespace vehicle_dispatch_api.Services.Auth
 
                     cancellationToken);
 
-            // 只有成功更新一筆才算開通成功。
-            return affectedRows == 1;
+            // 帳號更新失敗，取消整個流程
+            if (affectedRows != 1)
+            {
+                await transaction.RollbackAsync(
+                    cancellationToken);
+
+                return Reject(
+                    "Database",
+                    "UpdateConflict");
+            }
+
+            // ==========================================
+            // 13. 寫入手機設備資料
+            // ==========================================
+
+            _db.DriverAppPhones.Add(phone);
+
+            await _db.SaveChangesAsync(cancellationToken);
+
+            // ==========================================
+            // 14. Transaction Commit
+            // ==========================================
+
+            await transaction.CommitAsync(cancellationToken);
+
+            _logger.LogInformation(
+                "Driver activation succeeded. DriverId={DriverId}, PhoneId={PhoneId}",
+                driver.DriverId,
+                phone.PhoneId);
+
+            // ==========================================
+            // 15. 回傳開通結果
+            // ==========================================
+
+            return new ActivateDriverResponse
+            {
+                DriverId = driver.DriverId,
+
+                PhoneId = phone.PhoneId,
+
+                AccountStatus = "Active"
+            };
         }
 
-        // SHA256 驗證：
-        // 原始碼先 Trim + ToUpperInvariant，再以 UTF-8 計算 SHA256。
-        // Hash 輸出為 64 位 Hex，與 DB CHAR(64) 比較。
-        private static bool VerifyActivationCode(
-            string inputCode,
-            string storedHash)
-        {
-            if (string.IsNullOrWhiteSpace(storedHash))
-                return false;
+        // ==========================================
+        // 統一開通失敗紀錄
+        // ==========================================
 
+        private ActivateDriverResponse? Reject(
+            string stage,
+            string reason)
+        {
+            _logger.LogWarning(
+                "Driver activation rejected. Stage={Stage}, Reason={Reason}",
+                stage,
+                reason);
+
+            return null;
+        }
+
+        // ==========================================
+        // 驗證 ECDSA P-256 公鑰
+        // ==========================================
+
+        private static bool IsValidP256PublicKey(
+            string publicKey)
+        {
             try
             {
-                var normalizedCode =
-                    inputCode.Trim().ToUpperInvariant();
+                byte[] keyBytes =
+                    Convert.FromBase64String(publicKey);
 
-                if (normalizedCode.Length != 16 ||
-                    !normalizedCode.All(char.IsAsciiLetterOrDigit))
-                {
+                using var ecdsa = ECDsa.Create();
+
+                ecdsa.ImportSubjectPublicKeyInfo(
+                    keyBytes,
+                    out int bytesRead);
+
+                if (bytesRead != keyBytes.Length)
                     return false;
-                }
 
-                byte[] inputHash = SHA256.HashData(
-                    Encoding.UTF8.GetBytes(normalizedCode));
+                if (ecdsa.KeySize != 256)
+                    return false;
 
-                byte[] databaseHash = Convert.FromHexString(
-                    storedHash.Trim());
+                var curveOid =
+                    ecdsa.ExportParameters(false).Curve.Oid.Value;
 
-                // 先確認長度相同，再以固定時間比較。
-                return databaseHash.Length == inputHash.Length &&
-                    CryptographicOperations.FixedTimeEquals(
-                        inputHash,
-                        databaseHash);
+                var expectedOid =
+                    ECCurve.NamedCurves.nistP256.Oid.Value;
+
+                return string.Equals(
+                    curveOid,
+                    expectedOid,
+                    StringComparison.Ordinal);
             }
             catch (FormatException)
             {
-                // DB 內 activationtokenhash 不是有效的 Hex 字串。
+                return false;
+            }
+            catch (CryptographicException)
+            {
+                return false;
+            }
+            catch (ArgumentException)
+            {
                 return false;
             }
         }
 
-        // 初始密碼或開通碼驗證失敗時，增加開通失敗次數。
-        // 第五次錯誤後，直接清除開通碼及到期時間，使其失效。
-        private async Task RegisterFailedAttemptAsync(
-            DriverAppAccount driver,
-            DateTime now,
-            CancellationToken cancellationToken)
+        // ==========================================
+        // 開通碼正規化
+        // ==========================================
+
+        private static string NormalizeActivationCode(
+            string? code)
         {
-            var expectedActivationHash = driver.ActivationTokenHash;
-            var expectedPasswordHash = driver.PasswordHash;
-
-            await _db.DriverAppAccounts
-                .Where(x =>
-                    x.DriverId == driver.DriverId &&
-                    x.AccountStatus == "PendingActivation" &&
-                    x.PasswordHash == expectedPasswordHash &&
-                    x.ActivationTokenHash == expectedActivationHash &&
-                    x.ActivationExpiresAt > now &&
-                    x.ActivationFailedAttempts < MaxActivationAttempts)
-                .ExecuteUpdateAsync(setters => setters
-
-                    .SetProperty(
-                        x => x.ActivationFailedAttempts,
-                        x => x.ActivationFailedAttempts + 1)
-
-                    .SetProperty(
-                        x => x.ActivationTokenHash,
-                        x => x.ActivationFailedAttempts + 1 >= MaxActivationAttempts
-                            ? null
-                            : x.ActivationTokenHash)
-
-                    .SetProperty(
-                        x => x.ActivationExpiresAt,
-                        x => x.ActivationFailedAttempts + 1 >= MaxActivationAttempts
-                            ? (DateTime?)null
-                            : x.ActivationExpiresAt)
-
-                    .SetProperty(
-                        x => x.ModifyDate,
-                        now),
-
-                    cancellationToken);
+            return new string(
+                (code ?? string.Empty)
+                    .Where(c =>
+                        c != '-' &&
+                        !char.IsWhiteSpace(c))
+                    .ToArray()
+            ).ToUpperInvariant();
         }
     }
 }

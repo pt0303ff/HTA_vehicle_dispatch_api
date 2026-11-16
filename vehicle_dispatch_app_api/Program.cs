@@ -3,7 +3,6 @@ using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using vehicle_dispatch_app_api.Clients;
 using vehicle_dispatch_app_api.HealthChecks;
-using vehicle_dispatch_app_api.Clients;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -19,17 +18,24 @@ var internalApiBaseUrl =
     ?? throw new InvalidOperationException(
         "找不到 InternalApi:BaseUrl 設定");
 
+// 確保 BaseAddress 結尾有 /
+// 避免相對路徑解析錯誤
+var internalApiBaseUri = new Uri(
+    internalApiBaseUrl.EndsWith("/")
+        ? internalApiBaseUrl
+        : internalApiBaseUrl + "/");
+
 // 4. 註冊原本的 InternalApiClient
 builder.Services.AddHttpClient<InternalApiClient>(client =>
 {
-    client.BaseAddress = new Uri(internalApiBaseUrl);
+    client.BaseAddress = internalApiBaseUri;
     client.Timeout = TimeSpan.FromSeconds(10);
 });
 
 // 5. 註冊 Health Check 專用 HttpClient
 builder.Services.AddHttpClient("InternalApiHealth", client =>
 {
-    client.BaseAddress = new Uri(internalApiBaseUrl);
+    client.BaseAddress = internalApiBaseUri;
     client.Timeout = TimeSpan.FromSeconds(5);
 });
 
@@ -39,7 +45,7 @@ builder.Services.AddHttpClient("InternalApiHealth", client =>
 
 builder.Services.AddHttpClient<InternalAuthClient>(client =>
 {
-    client.BaseAddress = new Uri(internalApiBaseUrl);
+    client.BaseAddress = internalApiBaseUri;
     client.Timeout = TimeSpan.FromSeconds(15);
 });
 

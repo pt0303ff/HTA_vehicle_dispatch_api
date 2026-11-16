@@ -59,11 +59,6 @@ namespace vehicle_dispatch_api.Data.Configurations.Auth
                 .HasColumnType("datetime2(3)");
             // DB：開通碼到期時間
 
-            builder.Property(x => x.ActivationFailedAttempts)
-                .HasColumnName("activationfailedattempts")
-                .HasDefaultValue(0);
-            // TODO(DB修正)：原始 DDL 遺漏此欄位
-
             builder.Property(x => x.FailedLoginAttempts)
                 .HasColumnName("failedloginattempts")
                 .HasDefaultValue(0);

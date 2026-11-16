@@ -38,11 +38,24 @@ namespace vehicle_dispatch_app_api.Controllers
                 // 1. 開通成功
                 if (response.IsSuccessStatusCode)
                 {
-                    return Ok(new
+                    // 讀取內網 API 回傳的完整 JSON
+                    // 包含 driverId、phoneId、accountStatus
+                    var responseBody =
+                        await response.Content.ReadAsStringAsync(
+                            cancellationToken);
+
+                    // 保留內網 API 回傳的 Content-Type
+                    var contentType =
+                        response.Content.Headers.ContentType?.ToString()
+                        ?? "application/json";
+
+                    // 將內網 API 的成功結果完整回傳給 APP
+                    return new ContentResult
                     {
-                        success = true,
-                        message = "司機帳號開通成功"
-                    });
+                        StatusCode = (int)response.StatusCode,
+                        Content = responseBody,
+                        ContentType = contentType
+                    };
                 }
 
                 // 2. 開通資料錯誤

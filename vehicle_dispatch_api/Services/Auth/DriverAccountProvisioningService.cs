@@ -86,7 +86,6 @@ namespace vehicle_dispatch_api.Services.Auth
 
                 ActivationTokenHash = activationHash,
                 ActivationExpiresAt = now.AddHours(48),
-                ActivationFailedAttempts = 0,
                 FailedLoginAttempts = 0,
 
                 InitDate = now,

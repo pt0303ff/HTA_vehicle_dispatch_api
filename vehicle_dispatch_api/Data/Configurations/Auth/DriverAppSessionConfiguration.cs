@@ -11,10 +11,19 @@ namespace vehicle_dispatch_api.Data.Configurations.Auth
         public void Configure(
             EntityTypeBuilder<DriverAppSession> builder)
         {
-            // 資料表名稱
-            builder.ToTable("vehicledriverappsession", "dbo");
+            // ==========================================
+            // 1. 資料表名稱
+            // ==========================================
 
-            // Primary Key
+            builder.ToTable(
+                "vehicledriverappsession",
+                "dbo");
+
+
+            // ==========================================
+            // 2. Primary Key
+            // ==========================================
+
             builder.HasKey(x => x.SessionId)
                 .HasName("PK_vehicledriverappsession");
 
@@ -22,73 +31,129 @@ namespace vehicle_dispatch_api.Data.Configurations.Auth
                 .HasColumnName("session_id")
                 .HasColumnType("uniqueidentifier")
                 .HasDefaultValueSql("NEWSEQUENTIALID()");
-            // TODO(DB欄位確認)：Session 主鍵
+
+
+            // ==========================================
+            // 3. 司機與手機 ID
+            // ==========================================
 
             builder.Property(x => x.DriverId)
                 .HasColumnName("driver_id")
                 .HasColumnType("uniqueidentifier")
                 .IsRequired();
-            // TODO(DB欄位確認)：司機 ID
 
             builder.Property(x => x.PhoneId)
                 .HasColumnName("phone_id")
                 .HasColumnType("uniqueidentifier")
                 .IsRequired();
-            // TODO(DB欄位確認)：手機設備 ID
+
+
+            // ==========================================
+            // 4. Session 時間
+            // ==========================================
 
             builder.Property(x => x.CreatedAt)
                 .HasColumnName("created_at")
                 .HasColumnType("datetime2(3)")
                 .HasDefaultValueSql("SYSUTCDATETIME()");
-            // TODO(DB欄位確認)：Session 建立時間
 
             builder.Property(x => x.LastUsedAt)
                 .HasColumnName("lastused_at")
                 .HasColumnType("datetime2(3)");
-            // TODO(DB欄位確認)：最後使用時間
 
             builder.Property(x => x.IdleExpiresAt)
                 .HasColumnName("idleexpires_at")
                 .HasColumnType("datetime2(3)")
                 .IsRequired();
-            // TODO(DB欄位確認)：Session 閒置到期時間
 
             builder.Property(x => x.AbsoluteExpiresAt)
                 .HasColumnName("absoluteexpiresat")
                 .HasColumnType("datetime2(3)")
                 .IsRequired();
-            // TODO(DB欄位確認)：Session 最長到期時間
+
+
+            // ==========================================
+            // 5. Session 撤銷
+            // ==========================================
 
             builder.Property(x => x.RevokedAt)
                 .HasColumnName("revoked_at")
                 .HasColumnType("datetime2(3)");
-            // TODO(DB欄位確認)：Session 撤銷時間
 
             builder.Property(x => x.RevokedReason)
                 .HasColumnName("revokedreason")
                 .HasMaxLength(50);
-            // TODO(DB欄位確認)：Session 撤銷原因
+
+
+            // ==========================================
+            // 6. 並行控制
+            // ==========================================
 
             builder.Property(x => x.RowVersion)
                 .HasColumnName("row_version")
                 .IsRowVersion();
-            // TODO(DB欄位確認)：SQL Server ROWVERSION
-            // 用於並行控制，避免同一 Session 被同時更新
 
-            // 查詢司機的 Session
+
+            // ==========================================
+            // 7. 查詢索引
+            // ==========================================
+
             builder.HasIndex(x => x.DriverId)
                 .HasDatabaseName("IX_appsession_driver");
 
-            // 查詢手機的 Session
             builder.HasIndex(x => x.PhoneId)
                 .HasDatabaseName("IX_appsession_phone");
 
-            // 一個 Session 對應多筆 Refresh Token
+
+            // ==========================================
+            // 8. Session 與手機設備關聯（本次新增）
+            // ==========================================
+
+            builder.HasOne(x => x.Phone)
+                .WithMany(x => x.Sessions)
+
+                // Session 端的 Foreign Key
+                .HasForeignKey(x => new
+                {
+                    x.PhoneId,
+                    x.DriverId
+                })
+
+                // Phone 端的 Alternate Key
+                .HasPrincipalKey(x => new
+                {
+                    x.PhoneId,
+                    x.DriverId
+                })
+
+                .HasConstraintName(
+                    "FK_appsession_driverphone")
+
+                .OnDelete(DeleteBehavior.Restrict);
+
+            // 關聯：
+            // vehicledriverappsession(phone_id, driver_id)
+            //   -> vehicledriverphone(phone_id, driver_id)
+            //
+            // 必須同時符合手機 ID 及司機 ID
+
+
+            // ==========================================
+            // 9. Session 與 Refresh Token 關聯
+            // ==========================================
+
             builder.HasMany(x => x.RefreshTokens)
                 .WithOne(x => x.Session)
+
                 .HasForeignKey(x => x.SessionId)
-                .HasConstraintName("FK_refreshtoken_session")
+
+                .HasConstraintName(
+                    "FK_refreshtoken_session")
+
                 .OnDelete(DeleteBehavior.Restrict);
+
+            // 一個 Session 可以有多筆 Refresh Token
+            // 保留原本設定
         }
     }
 }

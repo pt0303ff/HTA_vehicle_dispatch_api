@@ -17,7 +17,11 @@ namespace vehicle_dispatch_app_api.Clients
             _configuration = configuration;
         }
 
-        // 呼叫內網 API，執行司機帳號開通
+        // 呼叫內網 API，執行司機帳號開通。
+        // request 包含 LoginId、InitialPassword、ActivationCode、
+        // NewPassword、Platform、PublicKey。
+        // 外網 API 不驗證密碼或開通碼，只負責透過內部服務通道轉送。
+
         public async Task<HttpResponseMessage> ActivateAsync(
             ActivateDriverRequest request,
             CancellationToken cancellationToken = default)
@@ -42,10 +46,16 @@ namespace vehicle_dispatch_app_api.Clients
                 "X-Internal-Api-Key",
                 apiKey);
 
-            // 將 DTO 自動轉換成 JSON
+            // 將 DTO 全部欄位自動轉換成 JSON，
+            // 包含新增的 InitialPassword、Platform、PublicKey，
+            // 並轉送至內網 API。
+
             httpRequest.Content = JsonContent.Create(request);
 
             // 發送至內網 API
+            // 回傳原始 HttpResponseMessage，
+            // 讓外網 Controller 可以取得內網 API 的狀態碼及回傳內容。
+
             return await _httpClient.SendAsync(
                 httpRequest,
                 HttpCompletionOption.ResponseHeadersRead,

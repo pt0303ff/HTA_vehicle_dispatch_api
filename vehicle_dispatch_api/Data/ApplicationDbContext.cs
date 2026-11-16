@@ -13,38 +13,54 @@ namespace vehicle_dispatch_api.Data
         {
         }
 
+
         // ==========================================
-        // DbSet：APP 帳號資料表
+        // 1. APP 司機帳號資料表
         // ==========================================
 
         public DbSet<DriverAppAccount> DriverAppAccounts
             => Set<DriverAppAccount>();
-        // 對應 dbo.vehicledriverappaccount
-        // TODO(DB確認)：資料表名稱及欄位目前仍為暫定
+
+        // DB：dbo.vehicledriver
+        // 儲存司機帳號、密碼 Hash、開通驗證碼等
 
 
         // ==========================================
-        // DbSet：登入 Session 資料表
+        // 2. APP 手機設備資料表（本次新增）
+        // ==========================================
+
+        public DbSet<DriverAppPhone> DriverAppPhones
+            => Set<DriverAppPhone>();
+
+        // DB：dbo.vehicledriverphone
+        // 儲存手機綁定紀錄、公鑰、設備狀態
+        // 一個司機可以對應多台手機
+
+
+        // ==========================================
+        // 3. APP 登入 Session 資料表
         // ==========================================
 
         public DbSet<DriverAppSession> DriverAppSessions
             => Set<DriverAppSession>();
-        // 對應 dbo.vehicledriverappsession
-        // TODO(DB確認)：依照目前提供的 DDL
+
+        // DB：dbo.vehicledriverappsession
+        // 儲存司機每次登入的 Session
 
 
         // ==========================================
-        // DbSet：Refresh Token 資料表
+        // 4. APP Refresh Token 資料表
         // ==========================================
 
         public DbSet<DriverAppRefreshToken> DriverAppRefreshTokens
             => Set<DriverAppRefreshToken>();
-        // 對應 dbo.vehicledriverapprefreshtoken
-        // TODO(DB確認)：依照目前提供的 DDL
+
+        // DB：dbo.vehicledriverapprefreshtoken
+        // 儲存 Refresh Token Hash 及撤銷紀錄
 
 
         // ==========================================
-        // EF Core Model Configuration
+        // 5. EF Core Model Configuration
         // ==========================================
 
         protected override void OnModelCreating(
@@ -54,6 +70,7 @@ namespace vehicle_dispatch_api.Data
 
             // 自動載入目前專案 Assembly 中所有
             // 實作 IEntityTypeConfiguration 的設定類別
+
             modelBuilder.ApplyConfigurationsFromAssembly(
                 typeof(ApplicationDbContext).Assembly);
         }

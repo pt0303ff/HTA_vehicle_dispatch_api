@@ -5,6 +5,10 @@ using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.Identity;
 using vehicle_dispatch_api.Models.Auth;
 using vehicle_dispatch_api.Services.Auth;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.IdentityModel.Tokens;
+
+
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -58,6 +62,12 @@ builder.Services.AddScoped<DriverAccountProvisioningService>();
 // 司機首次開通帳號服務
 builder.Services.AddScoped<DriverActivationService>();
 
+// 司機登入驗證服務
+builder.Services.AddScoped<DriverLoginService>();
+
+// 司機 Refresh Token 更新服務
+builder.Services.AddScoped<DriverRefreshService>();
+
 // 4. 取得 SQL Server 連線字串
 var connectionString = builder.Configuration
     .GetConnectionString("HTAPortal2024Db")
@@ -71,10 +81,122 @@ builder.Services.AddDbContext<ApplicationDbContext>(
         options.UseSqlServer(connectionString);
     });
 
+// ======================================
+// Phase 5-2：JWT 與 Refresh Token
+// ======================================
+
+// JWT Access Token 簽發
+builder.Services.AddScoped<JwtTokenService>();
+
+// Refresh Token 產生及 Hash
+builder.Services.AddSingleton<RefreshTokenService>();
+
+// 原本的 DriverLoginService 註冊保留
+
+
+// ==========================================
+// JWT Authentication 設定
+// ==========================================
+
+// 1. 取得 JWT 設定
+
+var jwtIssuer =
+    builder.Configuration["Jwt:Issuer"]
+    ?? throw new InvalidOperationException(
+        "找不到 Jwt:Issuer");
+
+var jwtAudience =
+    builder.Configuration["Jwt:Audience"]
+    ?? throw new InvalidOperationException(
+        "找不到 Jwt:Audience");
+
+var jwtSigningKey =
+    builder.Configuration["Jwt:SigningKey"]
+    ?? throw new InvalidOperationException(
+        "找不到 Jwt:SigningKey");
+
+
+// 2. 解碼 Base64 金鑰
+
+byte[] jwtKeyBytes;
+
+try
+{
+    jwtKeyBytes = Convert.FromBase64String(jwtSigningKey);
+}
+catch (FormatException ex)
+{
+    throw new InvalidOperationException(
+        "JWT SigningKey 格式錯誤",
+        ex);
+}
+
+if (jwtKeyBytes.Length < 32)
+{
+    throw new InvalidOperationException(
+        "JWT SigningKey 至少需要 32 Bytes");
+}
+
+var jwtSecurityKey =
+    new SymmetricSecurityKey(jwtKeyBytes);
+
+
+// ==========================================
+// 3. 註冊 JWT Bearer Authentication
+// ==========================================
+
+builder.Services
+    .AddAuthentication(
+        JwtBearerDefaults.AuthenticationScheme)
+    .AddJwtBearer(options =>
+    {
+        // 保留原始 Claim 名稱，例如 sub、session_id
+        options.MapInboundClaims = false;
+
+        options.TokenValidationParameters =
+            new TokenValidationParameters
+            {
+                // 確認簽發者
+                ValidateIssuer = true,
+                ValidIssuer = jwtIssuer,
+
+                // 確認接收對象
+                ValidateAudience = true,
+                ValidAudience = jwtAudience,
+
+                // 確認 Token 有效期限
+                ValidateLifetime = true,
+                RequireExpirationTime = true,
+
+                // 確認簽章
+                ValidateIssuerSigningKey = true,
+                IssuerSigningKey = jwtSecurityKey,
+
+                // 允許 30 秒時鐘誤差
+                ClockSkew = TimeSpan.FromSeconds(30),
+
+                // 使用 sub 作為使用者識別 Claim
+                NameClaimType = "sub"
+            };
+    });
+
+
+// ==========================================
+// 4. 註冊 Authorization
+// ==========================================
+
+builder.Services.AddAuthorization();
+
 var app = builder.Build();
 
 // 6. 啟用 HTTPS 轉址
 app.UseHttpsRedirection();
+
+// JWT 身分驗證
+app.UseAuthentication();
+
+// API 權限授權
+app.UseAuthorization();
 
 // 7. 開發環境啟用 Swagger
 if (app.Environment.IsDevelopment())

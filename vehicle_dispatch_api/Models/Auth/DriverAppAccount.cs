@@ -33,10 +33,6 @@
         // DB：vehicledriver.activationexpires_at
         // 開通碼到期時間，UTC
 
-        public int ActivationFailedAttempts { get; set; }
-        // DB：vehicledriver.activationfailedattempts
-        // 開通失敗次數；請確認 IT 已在資料表建立此欄位
-
         public int FailedLoginAttempts { get; set; }
         // DB：vehicledriver.failedloginattempts
         // 登入失敗次數

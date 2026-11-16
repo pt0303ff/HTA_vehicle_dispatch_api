@@ -1,55 +1,88 @@
 ﻿
-using System.ComponentModel.DataAnnotations.Schema;
-
 namespace vehicle_dispatch_api.Models.Auth
 {
     public class DriverAppSession
     {
+        // ==========================================
+        // 1. Session ID
+        // ==========================================
+
         public Guid SessionId { get; set; }
-        // TODO(DB欄位確認)：Session 主鍵
-        // 資料表：vehicledriverappsession
-        // 欄位：session_id
+        // DB：vehicledriverappsession.session_id
+        // Session 主鍵
+
+
+        // ==========================================
+        // 2. 司機與手機 ID
+        // ==========================================
 
         public Guid DriverId { get; set; }
-        // TODO(DB欄位確認)：司機 ID
-        // 欄位：driver_id
+        // DB：vehicledriverappsession.driver_id
+        // 目前登入的司機 ID
 
         public Guid PhoneId { get; set; }
-        // TODO(DB欄位確認)：手機設備 ID
-        // 欄位：phone_id
-        // Phase 5-3 對應 vehicledriverphone.phone_id
+        // DB：vehicledriverappsession.phone_id
+        // 目前登入的手機設備 ID
+
+
+        // ==========================================
+        // 3. Session 時間
+        // ==========================================
 
         public DateTime CreatedAt { get; set; }
-        // TODO(DB欄位確認)：Session 建立時間
-        // 欄位：created_at
+        // DB：created_at
+        // Session 建立時間，UTC
 
         public DateTime? LastUsedAt { get; set; }
-        // TODO(DB欄位確認)：最後使用時間
-        // 欄位：lastused_at
+        // DB：lastused_at
+        // 最後使用時間，UTC
 
         public DateTime IdleExpiresAt { get; set; }
-        // TODO(DB欄位確認)：閒置期限
-        // 欄位：idleexpires_at
+        // DB：idleexpires_at
+        // 閒置到期時間，UTC
 
         public DateTime AbsoluteExpiresAt { get; set; }
-        // TODO(DB欄位確認)：Session 最長期限
-        // 欄位：absoluteexpiresat
+        // DB：absoluteexpiresat
+        // Session 最長到期時間，UTC
+
+
+        // ==========================================
+        // 4. Session 撤銷
+        // ==========================================
 
         public DateTime? RevokedAt { get; set; }
-        // TODO(DB欄位確認)：Session 撤銷時間
-        // 欄位：revoked_at
+        // DB：revoked_at
+        // Session 撤銷時間
 
         public string? RevokedReason { get; set; }
-        // TODO(DB欄位確認)：Session 撤銷原因
-        // 欄位：revokedreason
+        // DB：revokedreason
+        // Session 撤銷原因
 
-        public byte[] RowVersion { get; set; } = Array.Empty<byte>();
-        // TODO(DB欄位確認)：SQL Server ROWVERSION
-        // 欄位：row_version
 
-        // EF Core Navigation Property
-        // 對應一個 Session 可以擁有多筆 Refresh Token
+        // ==========================================
+        // 5. 並行控制
+        // ==========================================
+
+        public byte[] RowVersion { get; set; }
+            = Array.Empty<byte>();
+
+        // DB：row_version
+        // SQL Server ROWVERSION
+
+
+        // ==========================================
+        // 6. EF Core Navigation Properties
+        // ==========================================
+
+        // 本次新增：
+        // 每個 Session 對應一台已登記的手機
+        public DriverAppPhone Phone { get; set; } = null!;
+
+        // 一個 Session 可以有多筆歷史 Refresh Token
         public ICollection<DriverAppRefreshToken> RefreshTokens
-        { get; set; } = new List<DriverAppRefreshToken>();
+        {
+            get;
+            set;
+        } = new List<DriverAppRefreshToken>();
     }
 }

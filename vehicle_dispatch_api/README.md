@@ -25,9 +25,13 @@ Configuration|集中管理資料表及欄位對應|
 |---|---|
 |/InternalAuthController.cs|內部API登入、帳號開通、JWT|
 |SystemController.cs|系統健康檢查|
+|/InternalDispatchController.cs|內部API 派車任務查詢|
 
 |**Service** ||
 |---|---|
+|/DispatchService.cs|派車任務查詢|
+|/Dispatch|
+|/DriverDispatchService.cs|司機派車任務查詢|
 |/Auth||  
 |/DriverAccountProvisioningService.cs|管理員產生司機開通權限|
 |/DriverPasswordService.cs |驗證密碼轉Hash|
@@ -37,6 +41,8 @@ Configuration|集中管理資料表及欄位對應|
 |/JwtTokenService.cs |JWT Token 產生與驗證|
 |/RefreshTokenService.cs |Refresh Token 產生與驗證|
 |/DriverRefreshService.cs|檢查Refresh Token 是否有效，並產生新的 Access Token|
+|/JwtSessionService.cs |確認 JWT 對應的 Session 是否仍有效|
+|/DriverLogoutService.cs |司機登出，刪除 Session 與 Refresh Token|
 
 |**Configurations** ||
 |---|---|
@@ -52,8 +58,9 @@ Configuration|集中管理資料表及欄位對應|
 |/ActivateDriverRequest.cs|司機開通請求資料格式|
 |/DriverLoginRequest.cs |登入請求資料格式|
 |/DriverLoginResponse.cs |登入回傳資料格式|
-|/DriverRefreshRequest.cs |Refresh Token請求資料格式|
-|/DriverRefreshResponse.cs|Refresh Token回傳資料格式|
+|/DriverRefreshRequest.cs |Refresh Token(APP呼叫)請求資料格式|
+|/DriverRefreshResponse.cs|Refresh Token(API更新成功)回傳資料格式|
+|/DriverLogoutRequest.cs|登出請求資料格式|
 
 |**Models** ||
 |---|---|

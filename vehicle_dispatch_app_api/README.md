@@ -16,11 +16,14 @@
 |--------|-----|
 |/InternalApiClient.cs	|呼叫內網 API 的 HTTP Client|
 |/InternalAuthClient.cs	|認證api來源是否有apikey|
+|/InternalDispatchClient.cs	|呼叫內網派遣 API 的 HTTP Client|
 
 
 |Controllers||
 |--------|-----|
 |/SystemController.cs	|系統健康檢查|
+|/AuthController.cs	|認證相關 API|
+|/DispatchController.cs	|派遣相關 API|
 
 |HealthChecks||
 |--------|-----|
@@ -30,6 +33,10 @@
 |--------|-----|
 |/Auth||
 |/ActivateDriverRequest.cs	|啟用司機請求資料格式|
+|/InternalAuthRequest.cs	|接收內網回傳Json|
+|/DriverLoginRequest.cs	|登入請求資料格式|
+|/DriverRefreshRequest.cs	|Refresh Token(APP呼叫)請求資料格式|
+|/Dispatch||
 
 
 

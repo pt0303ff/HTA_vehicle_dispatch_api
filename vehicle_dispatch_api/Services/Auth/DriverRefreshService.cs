@@ -93,7 +93,25 @@ namespace vehicle_dispatch_api.Services.Auth
                 return null;
             }
 
-            var session = currentToken.Session;
+            // ==========================================
+            // 鎖定 Session，避免 Refresh / Logout 同時執行
+            // ==========================================
+
+            var session = await _db.DriverAppSessions
+                .FromSqlInterpolated($@"
+                    SELECT *
+                    FROM dbo.vehicledriverappsession
+                        WITH (UPDLOCK, HOLDLOCK)
+                    WHERE session_id = {currentToken.SessionId}")
+                .SingleOrDefaultAsync(cancellationToken);
+
+            if (session == null)
+            {
+                await transaction.RollbackAsync(
+                    cancellationToken);
+
+                return null;
+            }
 
 
             // ==========================================

@@ -1,12 +1,15 @@
-using Microsoft.EntityFrameworkCore;
-using vehicle_dispatch_api.Data;
-using Microsoft.AspNetCore.Diagnostics.HealthChecks;
-using Microsoft.Extensions.Diagnostics.HealthChecks;
-using Microsoft.AspNetCore.Identity;
-using vehicle_dispatch_api.Models.Auth;
-using vehicle_dispatch_api.Services.Auth;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
+using Microsoft.AspNetCore.Identity;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.IdentityModel.Tokens;
+using Microsoft.OpenApi;
+using vehicle_dispatch_api.Data;
+using vehicle_dispatch_api.Models.Auth;
+using vehicle_dispatch_api.OpenApi;
+using vehicle_dispatch_api.Services.Auth;
+using vehicle_dispatch_api.Services.Dispatch;
 
 
 
@@ -25,7 +28,39 @@ builder.Services
     );
 
 // 3. 註冊 OpenAPI
-builder.Services.AddOpenApi();
+// 3. 註冊 OpenAPI
+// 加入 JWT Bearer 認證設定，讓 Swagger 可以輸入 Access Token
+
+builder.Services.AddOpenApi(options =>
+{
+    // 註冊 Bearer Security Scheme
+    options.AddDocumentTransformer<BearerSecuritySchemeTransformer>();
+
+    // 只替有 [Authorize] 的 API 加上 JWT 安全需求
+    options.AddOperationTransformer(
+        (operation, context, cancellationToken) =>
+        {
+            var requiresAuthorization =
+                context.Description.ActionDescriptor.EndpointMetadata
+                    .OfType<Microsoft.AspNetCore.Authorization.IAuthorizeData>()
+                    .Any();
+
+            if (requiresAuthorization)
+            {
+                operation.Security ??= [];
+
+                operation.Security.Add(
+                    new OpenApiSecurityRequirement
+                    {
+                        [new OpenApiSecuritySchemeReference(
+                            "Bearer",
+                            context.Document)] = []
+                    });
+            }
+
+            return Task.CompletedTask;
+        });
+});
 
 // ======================================
 // Phase 5-2：司機帳號與密碼服務
@@ -65,6 +100,9 @@ builder.Services.AddScoped<DriverActivationService>();
 // 司機登入驗證服務
 builder.Services.AddScoped<DriverLoginService>();
 
+// JWT Session 即時驗證
+builder.Services.AddScoped<JwtSessionValidationService>();
+
 // 司機 Refresh Token 更新服務
 builder.Services.AddScoped<DriverRefreshService>();
 
@@ -94,6 +132,14 @@ builder.Services.AddSingleton<RefreshTokenService>();
 // 原本的 DriverLoginService 註冊保留
 
 
+
+// ==========================================
+// Logout 登出服務
+// ==========================================
+
+builder.Services.AddScoped<DriverLogoutService>();
+
+builder.Services.AddScoped<DriverDispatchService>();
 // ==========================================
 // JWT Authentication 設定
 // ==========================================
@@ -145,40 +191,134 @@ var jwtSecurityKey =
 // 3. 註冊 JWT Bearer Authentication
 // ==========================================
 
+
 builder.Services
     .AddAuthentication(
         JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
     {
-        // 保留原始 Claim 名稱，例如 sub、session_id
+        // 保留原始 Claim 名稱
         options.MapInboundClaims = false;
 
         options.TokenValidationParameters =
             new TokenValidationParameters
             {
-                // 確認簽發者
                 ValidateIssuer = true,
                 ValidIssuer = jwtIssuer,
 
-                // 確認接收對象
                 ValidateAudience = true,
                 ValidAudience = jwtAudience,
 
-                // 確認 Token 有效期限
                 ValidateLifetime = true,
                 RequireExpirationTime = true,
 
-                // 確認簽章
                 ValidateIssuerSigningKey = true,
                 IssuerSigningKey = jwtSecurityKey,
 
-                // 允許 30 秒時鐘誤差
                 ClockSkew = TimeSpan.FromSeconds(30),
 
-                // 使用 sub 作為使用者識別 Claim
                 NameClaimType = "sub"
             };
+
+
+        // ==========================================
+        // JWT 驗證成功後，進一步檢查 DB Session
+        // ==========================================
+
+        options.Events = new JwtBearerEvents
+        {
+            OnTokenValidated = async context =>
+            {
+                var principal = context.Principal;
+
+                // 1. 取得 JWT Claims
+
+                var driverIdValue =
+                    principal?.FindFirst("sub")?.Value;
+
+                var sessionIdValue =
+                    principal?.FindFirst("session_id")?.Value;
+
+                var phoneIdValue =
+                    principal?.FindFirst("phone_id")?.Value;
+
+                var tokenType =
+                    principal?.FindFirst("token_type")?.Value;
+
+
+                // 2. 確認 Token 類型及 GUID 格式
+
+                if (tokenType != "access" ||
+                    !Guid.TryParse(
+                        driverIdValue, out var driverId) ||
+                    !Guid.TryParse(
+                        sessionIdValue, out var sessionId) ||
+                    !Guid.TryParse(
+                        phoneIdValue, out var phoneId))
+                {
+                    context.Fail("Invalid JWT claims.");
+                    return;
+                }
+
+
+                // 3. 從 DI 取得 Session 驗證 Service
+
+                var sessionService =
+                    context.HttpContext.RequestServices
+                        .GetRequiredService<
+                            JwtSessionValidationService>();
+
+                var logger =
+                    context.HttpContext.RequestServices
+                        .GetRequiredService<
+                            ILogger<JwtSessionValidationService>>();
+
+
+                // 4. 查詢資料庫驗證 Session
+
+                try
+                {
+                    var isValid =
+                        await sessionService.IsSessionValidAsync(
+                            driverId,
+                            sessionId,
+                            phoneId,
+                            context.HttpContext.RequestAborted
+                        );
+
+                    // 5. Session 無效，拒絕 JWT
+
+                    if (!isValid)
+                    {
+                        context.Fail(
+                            "Session is invalid or revoked.");
+
+                        return;
+                    }
+
+                    // Session 有效，繼續執行 API
+                }
+                catch (OperationCanceledException)
+                    when (context.HttpContext.RequestAborted
+                        .IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    // DB 或 Session 驗證服務發生錯誤
+                    // 記錄錯誤並停止本次請求，不允許繞過驗證
+
+                    logger.LogError(
+                        ex,
+                        "JWT Session 驗證時發生資料庫錯誤");
+
+                    throw;
+                }
+            }
+        };
     });
+
 
 
 // ==========================================

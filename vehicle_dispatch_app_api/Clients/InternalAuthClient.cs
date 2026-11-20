@@ -17,13 +17,14 @@ namespace vehicle_dispatch_app_api.Clients
             _configuration = configuration;
         }
 
-        // 呼叫內網 API，執行司機帳號開通。
-        // request 包含 LoginId、InitialPassword、ActivationCode、
-        // NewPassword、Platform、PublicKey。
-        // 外網 API 不驗證密碼或開通碼，只負責透過內部服務通道轉送。
 
-        public async Task<HttpResponseMessage> ActivateAsync(
-            ActivateDriverRequest request,
+        // ==========================================
+        // 共用：建立內網 API POST Request
+        // ==========================================
+
+        private async Task<HttpResponseMessage> SendPostAsync<T>(
+            string endpoint,
+            T request,
             CancellationToken cancellationToken = default)
         {
             // 取得外網 API 自己持有的服務驗證 Key
@@ -39,26 +40,84 @@ namespace vehicle_dispatch_app_api.Clients
             // 建立 HTTP Request
             using var httpRequest = new HttpRequestMessage(
                 HttpMethod.Post,
-                "api/internal/auth/activate");
+                endpoint);
 
             // 加入內部服務驗證 Header
             httpRequest.Headers.Add(
                 "X-Internal-Api-Key",
                 apiKey);
 
-            // 將 DTO 全部欄位自動轉換成 JSON，
-            // 包含新增的 InitialPassword、Platform、PublicKey，
-            // 並轉送至內網 API。
-
+            // 將 DTO 自動轉換成 JSON
             httpRequest.Content = JsonContent.Create(request);
 
             // 發送至內網 API
-            // 回傳原始 HttpResponseMessage，
-            // 讓外網 Controller 可以取得內網 API 的狀態碼及回傳內容。
-
             return await _httpClient.SendAsync(
                 httpRequest,
                 HttpCompletionOption.ResponseHeadersRead,
+                cancellationToken);
+        }
+
+
+        // ==========================================
+        // 1. 首次開通帳號
+        // POST: api/internal/auth/activate
+        // ==========================================
+
+        public Task<HttpResponseMessage> ActivateAsync(
+            ActivateDriverRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            return SendPostAsync(
+                "api/internal/auth/activate",
+                request,
+                cancellationToken);
+        }
+
+
+        // ==========================================
+        // 2. 司機登入
+        // POST: api/internal/auth/login
+        // ==========================================
+
+        public Task<HttpResponseMessage> LoginAsync(
+            DriverLoginRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            return SendPostAsync(
+                "api/internal/auth/login",
+                request,
+                cancellationToken);
+        }
+
+
+        // ==========================================
+        // 3. Refresh Token 更新
+        // POST: api/internal/auth/refresh
+        // ==========================================
+
+        public Task<HttpResponseMessage> RefreshAsync(
+            DriverRefreshRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            return SendPostAsync(
+                "api/internal/auth/refresh",
+                request,
+                cancellationToken);
+        }
+
+
+        // ==========================================
+        // 4. 司機登出
+        // POST: api/internal/auth/logout
+        // ==========================================
+
+        public Task<HttpResponseMessage> LogoutAsync(
+            DriverLogoutRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            return SendPostAsync(
+                "api/internal/auth/logout",
+                request,
                 cancellationToken);
         }
     }

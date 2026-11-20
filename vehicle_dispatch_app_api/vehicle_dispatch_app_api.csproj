@@ -8,11 +8,13 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.12" />
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.12" />
     <PackageReference Include="Swashbuckle.AspNetCore.SwaggerUI" Version="11.0.0" />
   </ItemGroup>
 
   <ItemGroup>
+    <Folder Include="DTOs\Dispatch\" />
     <Folder Include="Middleware\" />
     <Folder Include="Services\" />
 

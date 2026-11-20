@@ -18,17 +18,22 @@ namespace vehicle_dispatch_api.Controllers
         private readonly DriverRefreshService _refreshService;
         private readonly IConfiguration _configuration;
         private readonly ILogger<InternalAuthController> _logger;
+        
+        // Logout 登出服務
+        private readonly DriverLogoutService _logoutService;
 
         public InternalAuthController(
             DriverActivationService activationService,
             DriverLoginService loginService,
             DriverRefreshService refreshService,
+            DriverLogoutService logoutService,
             IConfiguration configuration,
             ILogger<InternalAuthController> logger)
         {
             _activationService = activationService;
             _loginService = loginService;
             _refreshService = refreshService;
+            _logoutService = logoutService;
             _configuration = configuration;
             _logger = logger;
         }
@@ -424,6 +429,139 @@ namespace vehicle_dispatch_api.Controllers
                 });
             }
         }
+
+        // ==========================================
+        // POST: api/internal/auth/logout
+        // 司機登出
+        // ==========================================
+
+        [HttpPost("logout")]
+        public async Task<IActionResult> Logout(
+            [FromHeader(Name = "X-Internal-Api-Key")]
+            string? suppliedKey,
+
+            [FromBody] DriverLogoutRequest request,
+
+            CancellationToken cancellationToken)
+        {
+            // ==========================================
+            // 1. 取得內部服務驗證 Key
+            // ==========================================
+
+            var expectedKey =
+                _configuration["InternalApi:ApiKey"];
+
+            if (string.IsNullOrWhiteSpace(expectedKey))
+            {
+                _logger.LogError(
+                    "尚未設定 InternalApi:ApiKey");
+
+                return StatusCode(500, new
+                {
+                    success = false,
+                    message = "內部服務尚未完成設定"
+                });
+            }
+
+
+            // ==========================================
+            // 2. 檢查 HTTP Header
+            // ==========================================
+
+            if (string.IsNullOrWhiteSpace(suppliedKey))
+            {
+                return Unauthorized(new
+                {
+                    success = false,
+                    message = "未授權的服務請求"
+                });
+            }
+
+
+            // ==========================================
+            // 3. 固定時間比較 API Key
+            // ==========================================
+
+            var expectedBytes =
+                Encoding.UTF8.GetBytes(expectedKey);
+
+            var suppliedBytes =
+                Encoding.UTF8.GetBytes(suppliedKey);
+
+            bool authorized =
+                expectedBytes.Length == suppliedBytes.Length &&
+                CryptographicOperations.FixedTimeEquals(
+                    expectedBytes,
+                    suppliedBytes);
+
+            if (!authorized)
+            {
+                return Unauthorized(new
+                {
+                    success = false,
+                    message = "未授權的服務請求"
+                });
+            }
+
+
+            // ==========================================
+            // 4. 執行 Logout
+            // ==========================================
+
+            try
+            {
+                bool success =
+                    await _logoutService.LogoutAsync(
+                        request.RefreshToken,
+                        cancellationToken);
+
+
+                if (!success)
+                {
+                    return Unauthorized(new
+                    {
+                        success = false,
+                        message = "Refresh Token 無效"
+                    });
+                }
+
+
+                // ==========================================
+                // 5. 登出成功
+                // ==========================================
+
+                return Ok(new
+                {
+                    success = true,
+                    message = "登出成功，Session 已撤銷"
+                });
+            }
+            catch (OperationCanceledException)
+                when (!cancellationToken.IsCancellationRequested)
+            {
+                _logger.LogError(
+                    "Logout 服務逾時");
+
+                return StatusCode(504, new
+                {
+                    success = false,
+                    message = "登出服務逾時"
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(
+                    ex,
+                    "司機登出時發生錯誤");
+
+                return StatusCode(500, new
+                {
+                    success = false,
+                    message = "登出服務發生錯誤"
+                });
+            }
+        }
+
 
 
     }

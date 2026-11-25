@@ -28,11 +28,28 @@ namespace vehicle_dispatch_api.Services.Auth
             return _hasher.HashPassword(driver, password);
         }
 
+        // 詳細驗證結果，供開通流程診斷使用
+        public PasswordVerificationResult VerifyPasswordResult(
+            DriverAppAccount driver,
+            string password)
+        {
+            if (driver == null ||
+                string.IsNullOrEmpty(driver.PasswordHash) ||
+                string.IsNullOrEmpty(password))
+            {
+                return PasswordVerificationResult.Failed;
+            }
+
+            return _hasher.VerifyHashedPassword(
+                driver,
+                driver.PasswordHash,
+                password);
+        }
+
         // 驗證使用者輸入的密碼。
         // 不可自行重新 Hash 後直接比較字串，因為每次 Hash 都會產生不同 Salt。
         public bool VerifyPassword(
-            DriverAppAccount driver,
-            string password)
+            DriverAppAccount driver,string password)
         {
             if (driver == null ||
                 string.IsNullOrEmpty(driver.PasswordHash) ||
@@ -48,20 +65,18 @@ namespace vehicle_dispatch_api.Services.Auth
                     driver.PasswordHash,
                     password);
 
-                // SuccessRehashNeeded 也代表密碼正確。
-                // 目前兩端固定相同規格，正常情況應回傳 Success。
                 return result != PasswordVerificationResult.Failed;
             }
             catch (FormatException)
             {
-                // DB 內 Hash 格式損壞或不是有效的 Identity Hash。
                 return false;
             }
             catch (ArgumentException)
             {
-                // DB 內 Hash 格式不正確。
                 return false;
             }
         }
     }
+
+
 }

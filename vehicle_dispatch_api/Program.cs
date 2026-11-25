@@ -106,6 +106,12 @@ builder.Services.AddScoped<JwtSessionValidationService>();
 // 司機 Refresh Token 更新服務
 builder.Services.AddScoped<DriverRefreshService>();
 
+// ==========================================
+// Phase 6-4：離線任務同步服務
+// ==========================================
+
+builder.Services.AddScoped<DriverDispatchSyncService>();
+
 // 4. 取得 SQL Server 連線字串
 var connectionString = builder.Configuration
     .GetConnectionString("HTAPortal2024Db")

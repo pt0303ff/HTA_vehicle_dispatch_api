@@ -145,6 +145,18 @@ builder.Services.AddHttpClient<InternalAuthClient>(client =>
     client.Timeout = TimeSpan.FromSeconds(15);
 });
 
+// ======================================
+// Phase 6-3：離線任務資料同步
+// ======================================
+
+builder.Services.AddHttpClient<InternalDispatchClient>(client =>
+{
+    client.BaseAddress = new Uri(internalApiBaseUrl);
+
+    // 同步資料可能比一般查詢大
+    client.Timeout = TimeSpan.FromSeconds(30);
+});
+
 
 // ==========================================
 // 6. 註冊 Health Check

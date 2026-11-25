@@ -1,17 +1,16 @@
 ﻿
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 using System;
 using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
-
-using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Logging;
-
 using vehicle_dispatch_api.Data;
 using vehicle_dispatch_api.DTOs.Auth;
 using vehicle_dispatch_api.Models.Auth;
+using Microsoft.AspNetCore.Identity;
 
 namespace vehicle_dispatch_api.Services.Auth
 {
@@ -142,16 +141,52 @@ namespace vehicle_dispatch_api.Services.Auth
             // 5. 驗證管理員提供的初始密碼
             // ==========================================
 
-            bool passwordValid = _passwordService.VerifyPassword(
-                driver,
-                initialPassword);
 
-            if (!passwordValid)
+            // ==========================================
+            // 5. 驗證管理員提供的初始密碼
+            // ==========================================
+
+            PasswordVerificationResult passwordResult;
+
+            try
+            {
+                passwordResult = _passwordService.VerifyPasswordResult(
+                    driver,
+                    initialPassword);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(
+                    ex,
+                    "PasswordHasher verification exception. DriverId={DriverId}",
+                    driver.DriverId);
+
+                return Reject(
+                    "Password",
+                    "PasswordHasherException");
+            }
+
+            // 記錄診斷資訊，不記錄明碼密碼及完整 Hash
+            _logger.LogInformation(
+                "Initial password verification diagnostic. " +
+                "DriverId={DriverId}, " +
+                "InputLength={InputLength}, " +
+                "HashLength={HashLength}, " +
+                "HasOuterWhitespace={HasOuterWhitespace}, " +
+                "Result={Result}",
+                driver.DriverId,
+                initialPassword.Length,
+                driver.PasswordHash?.Length ?? 0,
+                initialPassword != initialPassword.Trim(),
+                passwordResult);
+
+            if (passwordResult == PasswordVerificationResult.Failed)
             {
                 return Reject(
                     "Password",
                     "InitialPasswordVerificationFailed");
             }
+
 
             // ==========================================
             // 6. 檢查開通碼錯誤次數

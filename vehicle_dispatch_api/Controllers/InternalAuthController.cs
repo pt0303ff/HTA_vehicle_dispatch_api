@@ -1,7 +1,11 @@
 ﻿
+
+using System;
 using System.Security.Cryptography;
 using System.Text;
+
 using Microsoft.AspNetCore.Mvc;
+
 using vehicle_dispatch_api.DTOs.Auth;
 using vehicle_dispatch_api.Services.Auth;
 
@@ -13,18 +17,17 @@ namespace vehicle_dispatch_api.Controllers
     {
         private readonly DriverActivationService _activationService;
         private readonly DriverLoginService _loginService;
-
-        // Refresh Token 更新服務
+        private readonly DpopNonceService _dpopNonceService;
         private readonly DriverRefreshService _refreshService;
+        private readonly DriverLogoutService _logoutService;
+
         private readonly IConfiguration _configuration;
         private readonly ILogger<InternalAuthController> _logger;
-        
-        // Logout 登出服務
-        private readonly DriverLogoutService _logoutService;
 
         public InternalAuthController(
             DriverActivationService activationService,
             DriverLoginService loginService,
+            DpopNonceService dpopNonceService,
             DriverRefreshService refreshService,
             DriverLogoutService logoutService,
             IConfiguration configuration,
@@ -32,62 +35,75 @@ namespace vehicle_dispatch_api.Controllers
         {
             _activationService = activationService;
             _loginService = loginService;
+            _dpopNonceService = dpopNonceService;
             _refreshService = refreshService;
             _logoutService = logoutService;
             _configuration = configuration;
             _logger = logger;
         }
 
-        // POST: api/internal/auth/activate
-        [HttpPost("activate")]
-        public async Task<IActionResult> Activate(
-            [FromHeader(Name = "X-Internal-Api-Key")]
-            string? suppliedKey,
-            
-            [FromBody] ActivateDriverRequest request,
-            CancellationToken cancellationToken)
+        // ==========================================
+        // 內部 API Key 驗證
+        // ==========================================
+
+        private bool IsInternalApiAuthorized(string? suppliedKey)
         {
-            // 1. 取得內部服務驗證 Key
             var expectedKey =
                 _configuration["InternalApi:ApiKey"];
 
-            if (string.IsNullOrWhiteSpace(expectedKey))
+            if (string.IsNullOrWhiteSpace(expectedKey) ||
+                string.IsNullOrWhiteSpace(suppliedKey))
             {
-                _logger.LogError(
-                    "尚未設定 InternalApi:ApiKey");
-
-                return StatusCode(500, new
-                {
-                    success = false,
-                    message = "內部服務尚未完成設定"
-                });
+                return false;
             }
 
-            // 2. 檢查 HTTP Header
-
-            if (string.IsNullOrWhiteSpace(suppliedKey))
-            {
-                return Unauthorized(new
-                {
-                    success = false,
-                    message = "未授權的服務請求"
-                });
-            }
-
-            // 3. 使用固定時間比較 Key
             var expectedBytes =
                 Encoding.UTF8.GetBytes(expectedKey);
 
             var suppliedBytes =
                 Encoding.UTF8.GetBytes(suppliedKey);
 
-            bool authorized =
-                expectedBytes.Length == suppliedBytes.Length &&
+            return expectedBytes.Length == suppliedBytes.Length &&
                 CryptographicOperations.FixedTimeEquals(
                     expectedBytes,
                     suppliedBytes);
+        }
 
-            if (!authorized)
+        private IActionResult InternalApiConfigurationError()
+        {
+            _logger.LogError(
+                "尚未設定 InternalApi:ApiKey");
+
+            return StatusCode(500, new
+            {
+                success = false,
+                message = "內部服務尚未完成設定"
+            });
+        }
+
+        // ==========================================
+        // POST: api/internal/auth/activate
+        // 司機帳號開通
+        // ==========================================
+
+        [HttpPost("activate")]
+        public async Task<IActionResult> Activate(
+            [FromHeader(Name = "X-Internal-Api-Key")]
+            string? suppliedKey,
+
+            [FromBody] ActivateDriverRequest request,
+
+            CancellationToken cancellationToken)
+        {
+            var expectedKey =
+                _configuration["InternalApi:ApiKey"];
+
+            if (string.IsNullOrWhiteSpace(expectedKey))
+            {
+                return InternalApiConfigurationError();
+            }
+
+            if (!IsInternalApiAuthorized(suppliedKey))
             {
                 return Unauthorized(new
                 {
@@ -96,14 +112,13 @@ namespace vehicle_dispatch_api.Controllers
                 });
             }
 
-            // 4. 執行帳號開通
             try
             {
-                var result = await _activationService.ActivateAsync(
-                    request,
-                    cancellationToken);
+                var result =
+                    await _activationService.ActivateAsync(
+                        request,
+                        cancellationToken);
 
-                // null 代表開通失敗
                 if (result == null)
                 {
                     return BadRequest(new
@@ -113,16 +128,12 @@ namespace vehicle_dispatch_api.Controllers
                     });
                 }
 
-                // 開通成功，回傳司機及手機設備資訊
                 return Ok(new
                 {
                     success = true,
                     message = "司機帳號開通成功",
-
                     driverId = result.DriverId,
-
                     phoneId = result.PhoneId,
-
                     accountStatus = result.AccountStatus
                 });
             }
@@ -149,8 +160,76 @@ namespace vehicle_dispatch_api.Controllers
         }
 
         // ==========================================
+        // POST: api/internal/auth/nonce
+        // 取得 DPoP Nonce
+        // ==========================================
+
+        [HttpPost("nonce")]
+        public IActionResult GetNonce(
+            [FromHeader(Name = "X-Internal-Api-Key")]
+            string? suppliedKey,
+
+            [FromBody] DpopNonceRequest request)
+        {
+            var expectedKey =
+                _configuration["InternalApi:ApiKey"];
+
+            if (string.IsNullOrWhiteSpace(expectedKey))
+            {
+                return InternalApiConfigurationError();
+            }
+
+            if (!IsInternalApiAuthorized(suppliedKey))
+            {
+                return Unauthorized(new
+                {
+                    success = false,
+                    message = "未授權的服務請求"
+                });
+            }
+
+            if (request == null ||
+                request.PhoneId == Guid.Empty)
+            {
+                return BadRequest(new
+                {
+                    success = false,
+                    message = "Phone ID 無效"
+                });
+            }
+
+            try
+            {
+                var nonce =
+                    _dpopNonceService.CreateNonce(
+                        request.PhoneId);
+
+                Response.Headers["DPoP-Nonce"] = nonce;
+
+                return Ok(new
+                {
+                    success = true,
+                    nonce = nonce,
+                    expiresIn = 120
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(
+                    ex,
+                    "產生 DPoP Nonce 時發生錯誤");
+
+                return StatusCode(500, new
+                {
+                    success = false,
+                    message = "無法產生驗證 Nonce"
+                });
+            }
+        }
+
+        // ==========================================
         // POST: api/internal/auth/login
-        // 司機登入驗證
+        // DPoP + JWT 司機登入
         // ==========================================
 
         [HttpPost("login")]
@@ -158,119 +237,120 @@ namespace vehicle_dispatch_api.Controllers
             [FromHeader(Name = "X-Internal-Api-Key")]
             string? suppliedKey,
 
+            [FromHeader(Name = "DPoP")]
+            string? dpopProof,
+
             [FromBody] DriverLoginRequest request,
+
             CancellationToken cancellationToken)
         {
-            // 1. 取得內部服務驗證 Key
-
             var expectedKey =
                 _configuration["InternalApi:ApiKey"];
 
             if (string.IsNullOrWhiteSpace(expectedKey))
             {
+                return InternalApiConfigurationError();
+            }
+
+            if (!IsInternalApiAuthorized(suppliedKey))
+            {
+                return Unauthorized(new
+                {
+                    success = false,
+                    message = "未授權的服務請求"
+                });
+            }
+
+            // DPoP Proof 必須存在
+            if (string.IsNullOrWhiteSpace(dpopProof))
+            {
+                return Unauthorized(new
+                {
+                    success = false,
+                    message = "缺少 DPoP Proof"
+                });
+            }
+
+            // 取得外網正式登入 URL
+            // 必須與 APP DPoP htu 完全一致
+            var expectedUri =
+                _configuration["Dpop:LoginUri"];
+
+            if (string.IsNullOrWhiteSpace(expectedUri) ||
+                !Uri.TryCreate(
+                    expectedUri,
+                    UriKind.Absolute,
+                    out var parsedUri) ||
+                parsedUri.Scheme != Uri.UriSchemeHttps)
+            {
                 _logger.LogError(
-                    "尚未設定 InternalApi:ApiKey");
+                    "Dpop:LoginUri 未設定或不是有效 HTTPS URL");
 
                 return StatusCode(500, new
                 {
                     success = false,
-                    message = "內部服務尚未完成設定"
+                    message = "DPoP 登入服務尚未完成設定"
                 });
             }
-
-
-            // 2. 檢查 HTTP Header
-
-            if (string.IsNullOrWhiteSpace(suppliedKey))
-            {
-                return Unauthorized(new
-                {
-                    success = false,
-                    message = "未授權的服務請求"
-                });
-            }
-
-
-            // 3. 使用固定時間比較 Key
-
-            var expectedBytes =
-                Encoding.UTF8.GetBytes(expectedKey);
-
-            var suppliedBytes =
-                Encoding.UTF8.GetBytes(suppliedKey);
-
-            bool authorized =
-                expectedBytes.Length == suppliedBytes.Length &&
-                CryptographicOperations.FixedTimeEquals(
-                    expectedBytes,
-                    suppliedBytes);
-
-            if (!authorized)
-            {
-                return Unauthorized(new
-                {
-                    success = false,
-                    message = "未授權的服務請求"
-                });
-            }
-
-
-            // 4. 執行司機登入驗證
 
             try
             {
-                var result = await _loginService.LoginAsync(
-                    request,
-                    cancellationToken);
+                var result =
+                    await _loginService.LoginAsync(
+                        request,
+                        dpopProof,
+                        expectedUri,
+                        cancellationToken);
 
                 if (result == null)
                 {
                     return Unauthorized(new
                     {
                         success = false,
-                        message = "帳號、密碼或設備資訊錯誤"
+                        message = "帳號、密碼、設備或 DPoP 驗證失敗"
                     });
                 }
-
-
-                // 5. 登入成功，回傳 Session 資料
 
                 return Ok(new
                 {
                     success = true,
-
                     message = "登入成功",
 
-                    // 司機資訊
                     driverId = result.DriverId,
 
-                    // Session
                     sessionId = result.SessionId,
 
-                    sessionIdleExpiresAt = result.SessionIdleExpiresAt,
+                    sessionIdleExpiresAt =
+                        result.SessionIdleExpiresAt,
 
-                    sessionAbsoluteExpiresAt = result.SessionAbsoluteExpiresAt,
+                    sessionAbsoluteExpiresAt =
+                        result.SessionAbsoluteExpiresAt,
 
                     accountStatus = result.AccountStatus,
 
-                    // JWT Access Token
                     tokenType = result.TokenType,
 
                     accessToken = result.AccessToken,
 
-                    accessTokenExpiresAt = result.AccessTokenExpiresAt,
+                    accessTokenExpiresAt =
+                        result.AccessTokenExpiresAt,
 
-                    // Refresh Token
                     refreshToken = result.RefreshToken,
 
-                    refreshTokenExpiresAt = result.RefreshTokenExpiresAt
+                    refreshTokenExpiresAt =
+                        result.RefreshTokenExpiresAt
                 });
+            }
+            catch (OperationCanceledException)
+                when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
             }
             catch (Exception ex)
             {
                 _logger.LogError(
                     ex,
-                    "司機登入驗證時發生錯誤");
+                    "司機 DPoP 登入驗證時發生錯誤");
 
                 return StatusCode(500, new
                 {
@@ -279,7 +359,6 @@ namespace vehicle_dispatch_api.Controllers
                 });
             }
         }
-
 
         // ==========================================
         // POST: api/internal/auth/refresh
@@ -295,31 +374,15 @@ namespace vehicle_dispatch_api.Controllers
 
             CancellationToken cancellationToken)
         {
-            // ==========================================
-            // 1. 取得內部服務驗證 Key
-            // ==========================================
-
             var expectedKey =
                 _configuration["InternalApi:ApiKey"];
 
             if (string.IsNullOrWhiteSpace(expectedKey))
             {
-                _logger.LogError(
-                    "尚未設定 InternalApi:ApiKey");
-
-                return StatusCode(500, new
-                {
-                    success = false,
-                    message = "內部服務尚未完成設定"
-                });
+                return InternalApiConfigurationError();
             }
 
-
-            // ==========================================
-            // 2. 檢查 HTTP Header
-            // ==========================================
-
-            if (string.IsNullOrWhiteSpace(suppliedKey))
+            if (!IsInternalApiAuthorized(suppliedKey))
             {
                 return Unauthorized(new
                 {
@@ -327,45 +390,14 @@ namespace vehicle_dispatch_api.Controllers
                     message = "未授權的服務請求"
                 });
             }
-
-
-            // ==========================================
-            // 3. 使用固定時間比較 Key
-            // ==========================================
-
-            var expectedBytes =
-                Encoding.UTF8.GetBytes(expectedKey);
-
-            var suppliedBytes =
-                Encoding.UTF8.GetBytes(suppliedKey);
-
-            bool authorized =
-                expectedBytes.Length == suppliedBytes.Length &&
-                CryptographicOperations.FixedTimeEquals(
-                    expectedBytes,
-                    suppliedBytes);
-
-            if (!authorized)
-            {
-                return Unauthorized(new
-                {
-                    success = false,
-                    message = "未授權的服務請求"
-                });
-            }
-
-
-            // ==========================================
-            // 4. 執行 Refresh Token 更新
-            // ==========================================
 
             try
             {
-                var result = await _refreshService.RefreshAsync(
-                    request.RefreshToken,
-                    cancellationToken);
+                var result =
+                    await _refreshService.RefreshAsync(
+                        request.RefreshToken,
+                        cancellationToken);
 
-                // Token 無效、已過期或 Session 已失效
                 if (result == null)
                 {
                     return Unauthorized(new
@@ -375,21 +407,13 @@ namespace vehicle_dispatch_api.Controllers
                     });
                 }
 
-
-                // ==========================================
-                // 5. 回傳新的 Token
-                // ==========================================
-
                 return Ok(new
                 {
                     success = true,
-
                     message = "Token 更新成功",
 
-                    // 司機資訊
                     driverId = result.DriverId,
 
-                    // Session
                     sessionId = result.SessionId,
 
                     sessionIdleExpiresAt =
@@ -398,7 +422,6 @@ namespace vehicle_dispatch_api.Controllers
                     sessionAbsoluteExpiresAt =
                         result.SessionAbsoluteExpiresAt,
 
-                    // JWT Access Token
                     tokenType = result.TokenType,
 
                     accessToken = result.AccessToken,
@@ -406,15 +429,18 @@ namespace vehicle_dispatch_api.Controllers
                     accessTokenExpiresAt =
                         result.AccessTokenExpiresAt,
 
-                    // 新 Refresh Token
                     refreshToken = result.RefreshToken,
 
                     refreshTokenExpiresAt =
                         result.RefreshTokenExpiresAt,
 
-                    // Token 輪替版本
                     tokenVersion = result.TokenVersion
                 });
+            }
+            catch (OperationCanceledException)
+                when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
             }
             catch (Exception ex)
             {
@@ -444,31 +470,15 @@ namespace vehicle_dispatch_api.Controllers
 
             CancellationToken cancellationToken)
         {
-            // ==========================================
-            // 1. 取得內部服務驗證 Key
-            // ==========================================
-
             var expectedKey =
                 _configuration["InternalApi:ApiKey"];
 
             if (string.IsNullOrWhiteSpace(expectedKey))
             {
-                _logger.LogError(
-                    "尚未設定 InternalApi:ApiKey");
-
-                return StatusCode(500, new
-                {
-                    success = false,
-                    message = "內部服務尚未完成設定"
-                });
+                return InternalApiConfigurationError();
             }
 
-
-            // ==========================================
-            // 2. 檢查 HTTP Header
-            // ==========================================
-
-            if (string.IsNullOrWhiteSpace(suppliedKey))
+            if (!IsInternalApiAuthorized(suppliedKey))
             {
                 return Unauthorized(new
                 {
@@ -476,37 +486,6 @@ namespace vehicle_dispatch_api.Controllers
                     message = "未授權的服務請求"
                 });
             }
-
-
-            // ==========================================
-            // 3. 固定時間比較 API Key
-            // ==========================================
-
-            var expectedBytes =
-                Encoding.UTF8.GetBytes(expectedKey);
-
-            var suppliedBytes =
-                Encoding.UTF8.GetBytes(suppliedKey);
-
-            bool authorized =
-                expectedBytes.Length == suppliedBytes.Length &&
-                CryptographicOperations.FixedTimeEquals(
-                    expectedBytes,
-                    suppliedBytes);
-
-            if (!authorized)
-            {
-                return Unauthorized(new
-                {
-                    success = false,
-                    message = "未授權的服務請求"
-                });
-            }
-
-
-            // ==========================================
-            // 4. 執行 Logout
-            // ==========================================
 
             try
             {
@@ -514,7 +493,6 @@ namespace vehicle_dispatch_api.Controllers
                     await _logoutService.LogoutAsync(
                         request.RefreshToken,
                         cancellationToken);
-
 
                 if (!success)
                 {
@@ -525,11 +503,6 @@ namespace vehicle_dispatch_api.Controllers
                     });
                 }
 
-
-                // ==========================================
-                // 5. 登出成功
-                // ==========================================
-
                 return Ok(new
                 {
                     success = true,
@@ -537,16 +510,9 @@ namespace vehicle_dispatch_api.Controllers
                 });
             }
             catch (OperationCanceledException)
-                when (!cancellationToken.IsCancellationRequested)
+                when (cancellationToken.IsCancellationRequested)
             {
-                _logger.LogError(
-                    "Logout 服務逾時");
-
-                return StatusCode(504, new
-                {
-                    success = false,
-                    message = "登出服務逾時"
-                });
+                throw;
             }
             catch (Exception ex)
             {
@@ -561,8 +527,6 @@ namespace vehicle_dispatch_api.Controllers
                 });
             }
         }
-
-
-
     }
 }
+

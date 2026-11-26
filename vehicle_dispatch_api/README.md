@@ -45,6 +45,8 @@ Configuration|集中管理資料表及欄位對應|
 |/DriverRefreshService.cs|檢查Refresh Token 是否有效，並產生新的 Access Token|
 |/JwtSessionService.cs |確認 JWT 對應的 Session 是否仍有效|
 |/DriverLogoutService.cs |司機登出，刪除 Session 與 Refresh Token|
+|/DpopNonceService.cs |產生隨機 Nonce，保存 Nonce 的使用狀態，限制 120 秒有效期限，確保同一 Nonce 只能消耗一次。|
+|/DpopProofValidationService.cs |驗證 DPoP Jwt格式，檢查 Nonce 是否已使用過，檢查 DPoP Proof 的簽章是否正確。|
 
 |**Configurations** ||
 |---|---|
@@ -63,6 +65,7 @@ Configuration|集中管理資料表及欄位對應|
 |/DriverRefreshRequest.cs |Refresh Token(APP呼叫)請求資料格式|
 |/DriverRefreshResponse.cs|Refresh Token(API更新成功)回傳資料格式|
 |/DriverLogoutRequest.cs|登出請求資料格式|
+|/DpopNonceRequest.cs|DPoP Nonce請求資料格式|
 |/Dispatch||
 |/DispatchSyncRequest.cs|派車任務同步請求資料格式|
 |/DispatchTaskDerailDtos.cs|派車任務詳細資料格式|

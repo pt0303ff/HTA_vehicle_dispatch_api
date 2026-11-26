@@ -5,6 +5,9 @@ using Microsoft.EntityFrameworkCore;
 using vehicle_dispatch_api.Data;
 using vehicle_dispatch_api.DTOs.Auth;
 using vehicle_dispatch_api.Models.Auth;
+using System.Security.Cryptography;
+using System.Text;
+using Microsoft.IdentityModel.Tokens;
 
 namespace vehicle_dispatch_api.Services.Auth
 {
@@ -261,10 +264,16 @@ namespace vehicle_dispatch_api.Services.Auth
             // 10. 產生新的 JWT Access Token
             // ==========================================
 
+            // 從設備公鑰計算 RFC 7638 JWK Thumbprint
+            var dpopThumbprint = GetPublicKeyThumbprint(
+                phone.PublicKey);
+
+            // 產生綁定原設備金鑰的 JWT
             var accessTokenResult =
                 _jwtTokenService.CreateAccessToken(
                     session,
-                    now);
+                    now,
+                    dpopThumbprint);
 
 
             // ==========================================
@@ -420,5 +429,62 @@ namespace vehicle_dispatch_api.Services.Auth
 
             await _db.SaveChangesAsync(cancellationToken);
         }
+        // ==========================================
+        // 計算 RFC 7638 JWK Thumbprint
+        // ==========================================
+
+        private static string GetPublicKeyThumbprint(
+            string publicKeyBase64)
+        {
+            if (string.IsNullOrWhiteSpace(publicKeyBase64))
+            {
+                throw new InvalidOperationException(
+                    "設備公鑰不存在");
+            }
+
+            byte[] publicKeyBytes =
+                Convert.FromBase64String(publicKeyBase64);
+
+            using var ecdsa = ECDsa.Create();
+
+            ecdsa.ImportSubjectPublicKeyInfo(
+                publicKeyBytes,
+                out int bytesRead);
+
+            if (bytesRead != publicKeyBytes.Length)
+            {
+                throw new CryptographicException(
+                    "設備公鑰格式不正確");
+            }
+
+            var parameters = ecdsa.ExportParameters(false);
+
+            if (parameters.Q.X == null ||
+                parameters.Q.Y == null ||
+                parameters.Q.X.Length != 32 ||
+                parameters.Q.Y.Length != 32)
+            {
+                throw new CryptographicException(
+                    "設備公鑰不是有效的 P-256 公鑰");
+            }
+
+            string x = Base64UrlEncoder.Encode(parameters.Q.X);
+            string y = Base64UrlEncoder.Encode(parameters.Q.Y);
+
+            // RFC 7638 規定的 JWK 欄位順序
+            string canonicalJwk =
+                "{\"crv\":\"P-256\",\"kty\":\"EC\",\"x\":\"" +
+                x +
+                "\",\"y\":\"" +
+                y +
+                "\"}";
+
+            byte[] hash = SHA256.HashData(
+                Encoding.UTF8.GetBytes(canonicalJwk));
+
+            return Base64UrlEncoder.Encode(hash);
+        }
     }
+
+
 }

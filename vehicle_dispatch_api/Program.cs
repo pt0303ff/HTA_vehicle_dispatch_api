@@ -5,10 +5,11 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi;
+using Microsoft.Extensions.Caching.Memory;
+using vehicle_dispatch_api.Services.Auth;
 using vehicle_dispatch_api.Data;
 using vehicle_dispatch_api.Models.Auth;
 using vehicle_dispatch_api.OpenApi;
-using vehicle_dispatch_api.Services.Auth;
 using vehicle_dispatch_api.Services.Dispatch;
 
 
@@ -17,6 +18,19 @@ var builder = WebApplication.CreateBuilder(args);
 
 // 1. 註冊 API Controller
 builder.Services.AddControllers();
+
+// ==========================================
+// Phase 8-2：DPoP Nonce + JWT
+// ==========================================
+
+// DPoP Nonce 記憶體快取
+builder.Services.AddMemoryCache();
+
+// DPoP Nonce 管理
+builder.Services.AddSingleton<DpopNonceService>();
+
+// DPoP Proof 驗證
+builder.Services.AddScoped<DpopProofValidationService>();
 
 // 註冊 Health Check，並加入 SQL Server 連線檢查
 builder.Services

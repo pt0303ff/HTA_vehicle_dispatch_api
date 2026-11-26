@@ -17,7 +17,6 @@ namespace vehicle_dispatch_app_api.Clients
             _configuration = configuration;
         }
 
-
         // ==========================================
         // 共用：建立內網 API POST Request
         // ==========================================
@@ -25,9 +24,9 @@ namespace vehicle_dispatch_app_api.Clients
         private async Task<HttpResponseMessage> SendPostAsync<T>(
             string endpoint,
             T request,
-            CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken = default,
+            string? dpopProof = null)
         {
-            // 取得外網 API 自己持有的服務驗證 Key
             var apiKey =
                 _configuration["InternalApi:ApiKey"];
 
@@ -37,30 +36,32 @@ namespace vehicle_dispatch_app_api.Clients
                     "找不到 InternalApi:ApiKey 設定");
             }
 
-            // 建立 HTTP Request
             using var httpRequest = new HttpRequestMessage(
                 HttpMethod.Post,
                 endpoint);
 
-            // 加入內部服務驗證 Header
             httpRequest.Headers.Add(
                 "X-Internal-Api-Key",
                 apiKey);
 
-            // 將 DTO 自動轉換成 JSON
+            // 轉送 DPoP Proof，不重新簽章
+            if (!string.IsNullOrWhiteSpace(dpopProof))
+            {
+                httpRequest.Headers.Add(
+                    "DPoP",
+                    dpopProof);
+            }
+
             httpRequest.Content = JsonContent.Create(request);
 
-            // 發送至內網 API
             return await _httpClient.SendAsync(
                 httpRequest,
                 HttpCompletionOption.ResponseHeadersRead,
                 cancellationToken);
         }
 
-
         // ==========================================
         // 1. 首次開通帳號
-        // POST: api/internal/auth/activate
         // ==========================================
 
         public Task<HttpResponseMessage> ActivateAsync(
@@ -73,26 +74,45 @@ namespace vehicle_dispatch_app_api.Clients
                 cancellationToken);
         }
 
-
         // ==========================================
-        // 2. 司機登入
-        // POST: api/internal/auth/login
+        // 2. 取得 DPoP Nonce
         // ==========================================
 
-        public Task<HttpResponseMessage> LoginAsync(
-            DriverLoginRequest request,
+        public Task<HttpResponseMessage> GetNonceAsync(
+            DpopNonceRequest request,
             CancellationToken cancellationToken = default)
         {
             return SendPostAsync(
-                "api/internal/auth/login",
+                "api/internal/auth/nonce",
                 request,
                 cancellationToken);
         }
 
+        // ==========================================
+        // 3. 司機登入
+        // ==========================================
+
+        public Task<HttpResponseMessage> LoginAsync(
+            DriverLoginRequest request,
+            string dpopProof,
+            CancellationToken cancellationToken = default)
+        {
+            if (string.IsNullOrWhiteSpace(dpopProof))
+            {
+                throw new ArgumentException(
+                    "DPoP Proof 不可為空",
+                    nameof(dpopProof));
+            }
+
+            return SendPostAsync(
+                "api/internal/auth/login",
+                request,
+                cancellationToken,
+                dpopProof);
+        }
 
         // ==========================================
-        // 3. Refresh Token 更新
-        // POST: api/internal/auth/refresh
+        // 4. Refresh Token 更新
         // ==========================================
 
         public Task<HttpResponseMessage> RefreshAsync(
@@ -105,10 +125,8 @@ namespace vehicle_dispatch_app_api.Clients
                 cancellationToken);
         }
 
-
         // ==========================================
-        // 4. 司機登出
-        // POST: api/internal/auth/logout
+        // 5. 司機登出
         // ==========================================
 
         public Task<HttpResponseMessage> LogoutAsync(

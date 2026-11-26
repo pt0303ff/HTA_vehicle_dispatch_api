@@ -24,7 +24,6 @@ namespace vehicle_dispatch_app_api.Controllers
             _logger = logger;
         }
 
-
         // ==========================================
         // 1. POST: api/auth/activate
         // 司機首次開通帳號
@@ -43,28 +42,59 @@ namespace vehicle_dispatch_app_api.Controllers
                 cancellationToken);
         }
 
+        // ==========================================
+        // 2. POST: api/auth/nonce
+        // 取得 DPoP Nonce
+        // ==========================================
+
+        [HttpPost("nonce")]
+        public Task<IActionResult> GetNonce(
+            [FromBody] DpopNonceRequest request,
+            CancellationToken cancellationToken)
+        {
+            return ForwardAsync(
+                () => _internalAuthClient.GetNonceAsync(
+                    request,
+                    cancellationToken),
+                "取得 DPoP Nonce",
+                cancellationToken,
+                forwardDpopNonce: true);
+        }
 
         // ==========================================
-        // 2. POST: api/auth/login
-        // 司機登入
+        // 3. POST: api/auth/login
+        // DPoP + JWT 司機登入
         // ==========================================
 
         [HttpPost("login")]
         public Task<IActionResult> Login(
+            [FromHeader(Name = "DPoP")]
+            string? dpopProof,
+
             [FromBody] DriverLoginRequest request,
             CancellationToken cancellationToken)
         {
+            if (string.IsNullOrWhiteSpace(dpopProof))
+            {
+                return Task.FromResult<IActionResult>(
+                    BadRequest(new
+                    {
+                        success = false,
+                        message = "缺少 DPoP Proof"
+                    }));
+            }
+
             return ForwardAsync(
                 () => _internalAuthClient.LoginAsync(
                     request,
+                    dpopProof,
                     cancellationToken),
                 "司機登入",
                 cancellationToken);
         }
 
-
         // ==========================================
-        // 3. POST: api/auth/refresh
+        // 4. POST: api/auth/refresh
         // 更新 JWT Access Token
         // ==========================================
 
@@ -81,9 +111,8 @@ namespace vehicle_dispatch_app_api.Controllers
                 cancellationToken);
         }
 
-
         // ==========================================
-        // 4. POST: api/auth/logout
+        // 5. POST: api/auth/logout
         // 司機登出
         // ==========================================
 
@@ -100,7 +129,6 @@ namespace vehicle_dispatch_app_api.Controllers
                 cancellationToken);
         }
 
-
         // ==========================================
         // 共用：轉送內網 API 回應
         // ==========================================
@@ -108,11 +136,11 @@ namespace vehicle_dispatch_app_api.Controllers
         private async Task<IActionResult> ForwardAsync(
             Func<Task<HttpResponseMessage>> sendRequest,
             string operation,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            bool forwardDpopNonce = false)
         {
             try
             {
-                // 呼叫內網 API
                 using var response = await sendRequest();
 
                 // 讀取內網 API JSON
@@ -120,19 +148,25 @@ namespace vehicle_dispatch_app_api.Controllers
                     await response.Content.ReadAsStringAsync(
                         cancellationToken);
 
+                // ==========================================
+                // 轉送 DPoP-Nonce Response Header
+                // ==========================================
+
+                if (forwardDpopNonce &&
+                    response.Headers.TryGetValues(
+                        "DPoP-Nonce",
+                        out var nonceValues))
+                {
+                    Response.Headers["DPoP-Nonce"] =
+                        nonceValues.FirstOrDefault();
+                }
 
                 // ==========================================
                 // 1. 內網服務驗證失敗
                 // ==========================================
 
-                // 注意：
-                // Login / Refresh / Logout 本身也可能回傳 401
-                // 不能把所有 401 都當成 API Key 錯誤
-                //
-                // 只有內網明確回傳「未授權的服務請求」
-                // 才視為內外網服務驗證失敗
-
-                if (response.StatusCode == HttpStatusCode.Unauthorized &&
+                if (response.StatusCode ==
+                        HttpStatusCode.Unauthorized &&
                     IsInternalServiceUnauthorized(responseBody))
                 {
                     _logger.LogError(
@@ -145,7 +179,6 @@ namespace vehicle_dispatch_app_api.Controllers
                         message = "內部服務驗證失敗"
                     });
                 }
-
 
                 // ==========================================
                 // 2. 內網 API 路徑或權限設定錯誤
@@ -166,7 +199,6 @@ namespace vehicle_dispatch_app_api.Controllers
                     });
                 }
 
-
                 // ==========================================
                 // 3. 內網 API 逾時
                 // ==========================================
@@ -180,7 +212,6 @@ namespace vehicle_dispatch_app_api.Controllers
                         message = $"{operation}服務逾時"
                     });
                 }
-
 
                 // ==========================================
                 // 4. 內網 API 發生伺服器錯誤
@@ -200,28 +231,19 @@ namespace vehicle_dispatch_app_api.Controllers
                     });
                 }
 
-
                 // ==========================================
-                // 5. 將內網 API 結果原樣轉交 APP
+                // 5. 將內網 API 結果轉交 APP
                 // ==========================================
-
-                // 包含：
-                // HTTP 200：成功
-                // HTTP 400：請求資料錯誤
-                // HTTP 401：帳密或 Refresh Token 無效
 
                 if (string.IsNullOrWhiteSpace(responseBody))
                 {
-                    return StatusCode(
-                        (int)response.StatusCode);
+                    return StatusCode((int)response.StatusCode);
                 }
 
                 return new ContentResult
                 {
                     StatusCode = (int)response.StatusCode,
-
                     Content = responseBody,
-
                     ContentType =
                         response.Content.Headers.ContentType?.ToString()
                         ?? "application/json; charset=utf-8"
@@ -268,7 +290,6 @@ namespace vehicle_dispatch_app_api.Controllers
             }
         }
 
-
         // ==========================================
         // 判斷是否為內網 API Key 驗證失敗
         // ==========================================
@@ -291,7 +312,7 @@ namespace vehicle_dispatch_app_api.Controllers
             }
             catch (JsonException)
             {
-                // 非預期 JSON 格式，不視為 API Key 錯誤
+                // 非預期 JSON 格式
             }
 
             return false;

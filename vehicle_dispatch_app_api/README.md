@@ -36,6 +36,7 @@
 |/InternalAuthRequest.cs	|接收內網回傳Json|
 |/DriverLoginRequest.cs	|登入請求資料格式|
 |/DriverRefreshRequest.cs	|Refresh Token(APP呼叫)請求資料格式|
+|/DpopNonceRequest.cs	|DPoP Nonce請求資料格式|
 |/Dispatch||
 
 

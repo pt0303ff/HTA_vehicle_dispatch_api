@@ -11,6 +11,7 @@ using vehicle_dispatch_api.Data;
 using vehicle_dispatch_api.Models.Auth;
 using vehicle_dispatch_api.OpenApi;
 using vehicle_dispatch_api.Services.Dispatch;
+using vehicle_dispatch_api.Middleware;
 
 
 
@@ -30,7 +31,7 @@ builder.Services.AddMemoryCache();
 builder.Services.AddSingleton<DpopNonceService>();
 
 // DPoP Proof 驗證
-builder.Services.AddScoped<DpopProofValidationService>();
+builder.Services.AddSingleton<DpopProofValidationService>();
 
 // 註冊 Health Check，並加入 SQL Server 連線檢查
 builder.Services
@@ -355,6 +356,11 @@ app.UseHttpsRedirection();
 // JWT 身分驗證
 app.UseAuthentication();
 
+// ==========================================
+// Phase 8-4：DPoP 資源 API 驗證
+// ==========================================
+
+app.UseMiddleware<DpopResourceValidationMiddleware>();
 // API 權限授權
 app.UseAuthorization();
 

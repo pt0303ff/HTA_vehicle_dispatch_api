@@ -1,5 +1,6 @@
 ﻿
 using System.Net;
+using System.Linq;
 using System.Text.Json;
 
 using Microsoft.AspNetCore.Mvc;
@@ -95,17 +96,32 @@ namespace vehicle_dispatch_app_api.Controllers
 
         // ==========================================
         // 4. POST: api/auth/refresh
-        // 更新 JWT Access Token
+        // DPoP + Refresh Token Rotation
         // ==========================================
 
         [HttpPost("refresh")]
         public Task<IActionResult> Refresh(
+            [FromHeader(Name = "DPoP")]
+            string? dpopProof,
+
             [FromBody] DriverRefreshRequest request,
             CancellationToken cancellationToken)
         {
+            // DPoP Proof 必須存在
+            if (string.IsNullOrWhiteSpace(dpopProof))
+            {
+                return Task.FromResult<IActionResult>(
+                    BadRequest(new
+                    {
+                        success = false,
+                        message = "缺少 DPoP Proof"
+                    }));
+            }
+
             return ForwardAsync(
                 () => _internalAuthClient.RefreshAsync(
                     request,
+                    dpopProof,
                     cancellationToken),
                 "Refresh Token 更新",
                 cancellationToken);

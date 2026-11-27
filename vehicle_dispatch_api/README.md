@@ -90,4 +90,8 @@ Configuration|集中管理資料表及欄位對應|
 |DriverAppSessionConfiguration.cs|對應Session資料表|
 |DriverAppPhoneConfiguration.cs|對應司機手機資料表|
 
+|**Middleware** ||
+|---|---|
+|/DpopResourceValidationMiddleware.cs|DPoP資源API驗證|
+
 

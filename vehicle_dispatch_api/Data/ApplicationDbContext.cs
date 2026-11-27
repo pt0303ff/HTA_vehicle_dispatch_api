@@ -1,5 +1,6 @@
 ﻿
 using Microsoft.EntityFrameworkCore;
+using vehicle_dispatch_api.DTOs.Dispatch;
 using vehicle_dispatch_api.Models.Auth;
 
 namespace vehicle_dispatch_api.Data
@@ -63,16 +64,80 @@ namespace vehicle_dispatch_api.Data
         // 5. EF Core Model Configuration
         // ==========================================
 
-        protected override void OnModelCreating(
-            ModelBuilder modelBuilder)
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
             base.OnModelCreating(modelBuilder);
 
-            // 自動載入目前專案 Assembly 中所有
-            // 實作 IEntityTypeConfiguration 的設定類別
-
             modelBuilder.ApplyConfigurationsFromAssembly(
                 typeof(ApplicationDbContext).Assembly);
+
+            // ==========================================
+            // DriverTaskDbRow
+            // Keyless Query Model
+            // ==========================================
+
+            modelBuilder.Entity<DriverTaskDbRow>(entity =>
+            {
+                entity.HasNoKey();
+
+                entity.Property(x => x.FromLatitude)
+                    .HasPrecision(18, 6);
+
+                entity.Property(x => x.FromLongitude)
+                    .HasPrecision(18, 6);
+
+                entity.Property(x => x.ToLatitude)
+                    .HasPrecision(18, 6);
+
+                entity.Property(x => x.ToLongitude)
+                    .HasPrecision(18, 6);
+            });
+
+            // ==========================================
+            // DriverTaskStopDbRow
+            // Keyless Query Model
+            // ==========================================
+
+            modelBuilder.Entity<DriverTaskStopDbRow>(entity =>
+            {
+                entity.HasNoKey();
+
+                entity.Property(x => x.Co2Kg)
+                    .HasPrecision(18, 3);
+
+                entity.Property(x => x.DistanceKm)
+                    .HasPrecision(18, 3);
+
+                entity.Property(x => x.EndKm)
+                    .HasPrecision(18, 3);
+
+                entity.Property(x => x.FactorGkm)
+                    .HasPrecision(18, 3);
+
+                entity.Property(x => x.Latitude)
+                    .HasPrecision(18, 8);
+
+                entity.Property(x => x.Longitude)
+                    .HasPrecision(18, 8);
+
+                entity.Property(x => x.StartKm)
+                    .HasPrecision(18, 3);
+            });
+
+            // ==========================================
+            // DriverTaskCargoDbRow
+            // Keyless Query Model
+            // ==========================================
+
+            modelBuilder.Entity<DriverTaskCargoDbRow>(entity =>
+            {
+                entity.HasNoKey();
+
+                entity.Property(x => x.Qty)
+                    .HasPrecision(18, 3);
+            });
         }
+
     }
 }

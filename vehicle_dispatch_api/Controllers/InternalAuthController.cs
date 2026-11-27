@@ -1,5 +1,4 @@
 ﻿
-
 using System;
 using System.Security.Cryptography;
 using System.Text;
@@ -20,7 +19,7 @@ namespace vehicle_dispatch_api.Controllers
         private readonly DpopNonceService _dpopNonceService;
         private readonly DriverRefreshService _refreshService;
         private readonly DriverLogoutService _logoutService;
-
+        private readonly IWebHostEnvironment _environment;
         private readonly IConfiguration _configuration;
         private readonly ILogger<InternalAuthController> _logger;
 
@@ -30,6 +29,7 @@ namespace vehicle_dispatch_api.Controllers
             DpopNonceService dpopNonceService,
             DriverRefreshService refreshService,
             DriverLogoutService logoutService,
+            IWebHostEnvironment environment,
             IConfiguration configuration,
             ILogger<InternalAuthController> logger)
         {
@@ -38,6 +38,7 @@ namespace vehicle_dispatch_api.Controllers
             _dpopNonceService = dpopNonceService;
             _refreshService = refreshService;
             _logoutService = logoutService;
+            _environment = environment;
             _configuration = configuration;
             _logger = logger;
         }
@@ -79,6 +80,29 @@ namespace vehicle_dispatch_api.Controllers
                 success = false,
                 message = "內部服務尚未完成設定"
             });
+        }
+
+        // ==========================================
+        // DPoP URL 設定驗證
+        // ==========================================
+
+        private bool IsValidDpopUri(string? uri)
+        {
+            if (!Uri.TryCreate(
+                    uri,
+                    UriKind.Absolute,
+                    out var uriObject))
+            {
+                return false;
+            }
+
+            if (uriObject.Scheme == Uri.UriSchemeHttps)
+            {
+                return true;
+            }
+
+            return _environment.IsDevelopment() &&
+                   uriObject.Scheme == Uri.UriSchemeHttp;
         }
 
         // ==========================================
@@ -144,6 +168,11 @@ namespace vehicle_dispatch_api.Controllers
                     success = false,
                     message = ex.Message
                 });
+            }
+            catch (OperationCanceledException)
+                when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
             }
             catch (Exception ex)
             {
@@ -261,7 +290,6 @@ namespace vehicle_dispatch_api.Controllers
                 });
             }
 
-            // DPoP Proof 必須存在
             if (string.IsNullOrWhiteSpace(dpopProof))
             {
                 return Unauthorized(new
@@ -271,25 +299,19 @@ namespace vehicle_dispatch_api.Controllers
                 });
             }
 
-            // 取得外網正式登入 URL
-            // 必須與 APP DPoP htu 完全一致
+            // 取得 APP 實際呼叫的外網登入 URL
             var expectedUri =
                 _configuration["Dpop:LoginUri"];
 
-            if (string.IsNullOrWhiteSpace(expectedUri) ||
-                !Uri.TryCreate(
-                    expectedUri,
-                    UriKind.Absolute,
-                    out var parsedUri) ||
-                parsedUri.Scheme != Uri.UriSchemeHttps)
+            if (!IsValidDpopUri(expectedUri))
             {
                 _logger.LogError(
-                    "Dpop:LoginUri 未設定或不是有效 HTTPS URL");
+                    "Dpop:LoginUri 未設定或不是符合環境要求的 URL");
 
                 return StatusCode(500, new
                 {
                     success = false,
-                    message = "DPoP 登入服務尚未完成設定"
+                    message = "DPoP LoginUri 設定錯誤"
                 });
             }
 
@@ -299,7 +321,7 @@ namespace vehicle_dispatch_api.Controllers
                     await _loginService.LoginAsync(
                         request,
                         dpopProof,
-                        expectedUri,
+                        expectedUri!,
                         cancellationToken);
 
                 if (result == null)
@@ -362,13 +384,16 @@ namespace vehicle_dispatch_api.Controllers
 
         // ==========================================
         // POST: api/internal/auth/refresh
-        // 更新 JWT Access Token 及 Refresh Token
+        // DPoP + Refresh Token Rotation
         // ==========================================
 
         [HttpPost("refresh")]
         public async Task<IActionResult> Refresh(
             [FromHeader(Name = "X-Internal-Api-Key")]
             string? suppliedKey,
+
+            [FromHeader(Name = "DPoP")]
+            string? dpopProof,
 
             [FromBody] DriverRefreshRequest request,
 
@@ -391,11 +416,49 @@ namespace vehicle_dispatch_api.Controllers
                 });
             }
 
+            // DPoP Proof 必須存在
+            if (string.IsNullOrWhiteSpace(dpopProof))
+            {
+                return Unauthorized(new
+                {
+                    success = false,
+                    message = "缺少 DPoP Proof"
+                });
+            }
+
+            // 取得 APP 實際呼叫的外網 Refresh URL
+            var expectedUri =
+                _configuration["Dpop:RefreshUri"];
+
+            if (!IsValidDpopUri(expectedUri))
+            {
+                _logger.LogError(
+                    "Dpop:RefreshUri 未設定或不是符合環境要求的 URL");
+
+                return StatusCode(500, new
+                {
+                    success = false,
+                    message = "DPoP RefreshUri 設定錯誤"
+                });
+            }
+
+            if (request == null ||
+                string.IsNullOrWhiteSpace(request.RefreshToken))
+            {
+                return BadRequest(new
+                {
+                    success = false,
+                    message = "Refresh Token 不可為空"
+                });
+            }
+
             try
             {
                 var result =
                     await _refreshService.RefreshAsync(
                         request.RefreshToken,
+                        dpopProof,
+                        expectedUri!,
                         cancellationToken);
 
                 if (result == null)
@@ -403,7 +466,7 @@ namespace vehicle_dispatch_api.Controllers
                     return Unauthorized(new
                     {
                         success = false,
-                        message = "Refresh Token 無效、已過期或 Session 已失效"
+                        message = "Refresh Token、設備或 DPoP 驗證失敗，或 Session 已失效"
                     });
                 }
 
@@ -487,6 +550,16 @@ namespace vehicle_dispatch_api.Controllers
                 });
             }
 
+            if (request == null ||
+                string.IsNullOrWhiteSpace(request.RefreshToken))
+            {
+                return BadRequest(new
+                {
+                    success = false,
+                    message = "Refresh Token 不可為空"
+                });
+            }
+
             try
             {
                 bool success =
@@ -529,4 +602,3 @@ namespace vehicle_dispatch_api.Controllers
         }
     }
 }
-

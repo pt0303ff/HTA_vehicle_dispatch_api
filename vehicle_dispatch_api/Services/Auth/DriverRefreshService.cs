@@ -16,6 +16,7 @@ namespace vehicle_dispatch_api.Services.Auth
         private readonly ApplicationDbContext _db;
         private readonly RefreshTokenService _refreshTokenService;
         private readonly JwtTokenService _jwtTokenService;
+        private readonly DpopProofValidationService _dpopProofValidationService;
 
 
         // ==========================================
@@ -25,11 +26,13 @@ namespace vehicle_dispatch_api.Services.Auth
         public DriverRefreshService(
             ApplicationDbContext db,
             RefreshTokenService refreshTokenService,
-            JwtTokenService jwtTokenService)
+            JwtTokenService jwtTokenService,
+            DpopProofValidationService dpopProofValidationService)
         {
             _db = db;
             _refreshTokenService = refreshTokenService;
             _jwtTokenService = jwtTokenService;
+            _dpopProofValidationService = dpopProofValidationService;
         }
 
 
@@ -39,6 +42,8 @@ namespace vehicle_dispatch_api.Services.Auth
 
         public async Task<DriverRefreshResponse?> RefreshAsync(
             string refreshToken,
+            string dpopProof,
+            string expectedUri,
             CancellationToken cancellationToken = default)
         {
             // ==========================================
@@ -46,7 +51,9 @@ namespace vehicle_dispatch_api.Services.Auth
             // ==========================================
 
             if (string.IsNullOrWhiteSpace(refreshToken) ||
-                refreshToken.Length > 256)
+                refreshToken.Length > 256 ||
+                string.IsNullOrWhiteSpace(dpopProof) ||
+                string.IsNullOrWhiteSpace(expectedUri))
             {
                 return null;
             }
@@ -116,7 +123,42 @@ namespace vehicle_dispatch_api.Services.Auth
                 return null;
             }
 
+            // ==========================================
+            // 4. DPoP 設備持有權驗證
+            // ==========================================
 
+            // 從 Refresh Token 關聯的 Session 取得原設備
+            // 不接受 APP 自行指定公鑰或 Phone ID。
+
+            var phone = currentToken.Session?.Phone;
+
+            if (phone == null ||
+                string.IsNullOrWhiteSpace(phone.PublicKey))
+            {
+                await transaction.RollbackAsync(
+                    cancellationToken);
+
+                return null;
+            }
+
+            // 使用資料庫內的公鑰驗證 DPoP Proof
+            bool dpopValid = _dpopProofValidationService.ValidateProof(
+                dpopProof,
+                phone.PublicKey,
+                session.PhoneId,
+                "POST",
+                expectedUri,
+                out var dpopThumbprint,
+                out var dpopError);
+
+            if (!dpopValid)
+            {
+                // DPoP 失敗不能修改或撤銷 Refresh Token
+                await transaction.RollbackAsync(
+                    cancellationToken);
+
+                return null;
+            }
             // ==========================================
             // 4. 檢查 Token 是否已經使用過
             // ==========================================
@@ -221,11 +263,7 @@ namespace vehicle_dispatch_api.Services.Auth
             // 8. 確認手機設備仍然有效
             // ==========================================
 
-            var phone = session.Phone;
-
-            if (phone == null ||
-                phone.Status != DriverAppPhone.StatusBound ||
-                string.IsNullOrWhiteSpace(phone.PublicKey))
+            if (phone.Status != DriverAppPhone.StatusBound)
             {
                 await RevokeSessionAsync(
                     session,
@@ -265,8 +303,7 @@ namespace vehicle_dispatch_api.Services.Auth
             // ==========================================
 
             // 從設備公鑰計算 RFC 7638 JWK Thumbprint
-            var dpopThumbprint = GetPublicKeyThumbprint(
-                phone.PublicKey);
+            
 
             // 產生綁定原設備金鑰的 JWT
             var accessTokenResult =

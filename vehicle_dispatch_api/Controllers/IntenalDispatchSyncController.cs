@@ -4,10 +4,10 @@ using System.Text;
 
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Data.SqlClient;
 
 using vehicle_dispatch_api.DTOs.Dispatch;
 using vehicle_dispatch_api.Services.Dispatch;
-using Microsoft.Data.SqlClient;
 
 namespace vehicle_dispatch_api.Controllers;
 
@@ -31,19 +31,12 @@ public sealed class InternalDispatchSyncController : ControllerBase
     }
 
     // ==================================================
-    // POST: api/internal/dispatch/sync
-    // 接收外網 API 傳來的離線任務資料
+    // 共用：驗證內部 API Key
     // ==================================================
 
-    [HttpPost("sync")]
-    public async Task<IActionResult> Sync(
-        [FromBody] DispatchSyncRequest request,
-        CancellationToken cancellationToken)
+    private IActionResult? ValidateInternalApiKey(
+        string? suppliedKey)
     {
-        // ==========================================
-        // 1. 驗證內部 API Key
-        // ==========================================
-
         var expectedKey =
             _configuration["InternalApi:ApiKey"];
 
@@ -59,9 +52,7 @@ public sealed class InternalDispatchSyncController : ControllerBase
             });
         }
 
-        if (!Request.Headers.TryGetValue(
-                "X-Internal-Api-Key",
-                out var suppliedKey))
+        if (string.IsNullOrWhiteSpace(suppliedKey))
         {
             return Unauthorized(new
             {
@@ -74,7 +65,7 @@ public sealed class InternalDispatchSyncController : ControllerBase
             Encoding.UTF8.GetBytes(expectedKey);
 
         var suppliedBytes =
-            Encoding.UTF8.GetBytes(suppliedKey.ToString());
+            Encoding.UTF8.GetBytes(suppliedKey);
 
         var authorized =
             expectedBytes.Length == suppliedBytes.Length &&
@@ -91,15 +82,96 @@ public sealed class InternalDispatchSyncController : ControllerBase
             });
         }
 
-        // ==========================================
-        // 2. 從 JWT 取得司機 ID
-        // ==========================================
+        return null;
+    }
+
+    // ==================================================
+    // 共用：確認 DPoP Middleware 驗證成功
+    // ==================================================
+
+    private bool IsDpopValidated()
+    {
+        return HttpContext.Items.TryGetValue(
+                   "DpopValidated",
+                   out var validated)
+               &&
+               validated is true;
+    }
+
+    // ==================================================
+    // 共用：從 JWT 取得 DriverId
+    // ==================================================
+
+    private bool TryGetAuthenticatedDriverId(
+        out Guid driverId)
+    {
+        driverId = Guid.Empty;
 
         var driverIdValue =
             User.FindFirst("sub")?.Value;
 
-        if (!Guid.TryParse(driverIdValue, out var driverId) ||
-            driverId == Guid.Empty)
+        return Guid.TryParse(
+                   driverIdValue,
+                   out driverId)
+               &&
+               driverId != Guid.Empty;
+    }
+
+    // ==================================================
+    // POST: api/internal/dispatch/sync
+    // 接收外網 API 傳來的離線任務資料
+    // ==================================================
+
+    [HttpPost("sync")]
+    public async Task<IActionResult> Sync(
+        [FromBody] DispatchSyncRequest request,
+        CancellationToken cancellationToken)
+    {
+        // ==========================================
+        // 1. 驗證內部 API Key
+        // ==========================================
+
+        if (!Request.Headers.TryGetValue(
+                "X-Internal-Api-Key",
+                out var suppliedKey))
+        {
+            return Unauthorized(new
+            {
+                success = false,
+                message = "未授權的服務請求"
+            });
+        }
+
+        var keyError =
+            ValidateInternalApiKey(suppliedKey.ToString());
+
+        if (keyError != null)
+        {
+            return keyError;
+        }
+
+        // ==========================================
+        // 2. 確認 DPoP Middleware 已驗證成功
+        // ==========================================
+
+        if (!IsDpopValidated())
+        {
+            _logger.LogWarning(
+                "離線任務同步未通過 DPoP 驗證");
+
+            return Unauthorized(new
+            {
+                success = false,
+                message = "DPoP 驗證尚未完成"
+            });
+        }
+
+        // ==========================================
+        // 3. 從 JWT 取得司機 ID
+        // ==========================================
+
+        if (!TryGetAuthenticatedDriverId(
+                out var driverId))
         {
             return Unauthorized(new
             {
@@ -109,7 +181,20 @@ public sealed class InternalDispatchSyncController : ControllerBase
         }
 
         // ==========================================
-        // 3. 執行同步
+        // 4. 確認同步資料
+        // ==========================================
+
+        if (request == null)
+        {
+            return BadRequest(new
+            {
+                success = false,
+                message = "同步資料不可為空"
+            });
+        }
+
+        // ==========================================
+        // 5. 執行同步
         // ==========================================
 
         try
@@ -171,7 +256,7 @@ public sealed class InternalDispatchSyncController : ControllerBase
             throw;
         }
         catch (SqlException ex)
-    when (ex.Number == 2601 || ex.Number == 2627)
+            when (ex.Number == 2601 || ex.Number == 2627)
         {
             _logger.LogWarning(
                 ex,

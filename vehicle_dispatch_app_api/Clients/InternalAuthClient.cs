@@ -1,4 +1,3 @@
-﻿
 using System.Net.Http.Json;
 using vehicle_dispatch_app_api.DTOs.Auth;
 
@@ -117,12 +116,21 @@ namespace vehicle_dispatch_app_api.Clients
 
         public Task<HttpResponseMessage> RefreshAsync(
             DriverRefreshRequest request,
+            string dpopProof,
             CancellationToken cancellationToken = default)
         {
+            if (string.IsNullOrWhiteSpace(dpopProof))
+            {
+                throw new ArgumentException(
+                    "DPoP Proof 不可為空",
+                    nameof(dpopProof));
+            }
+
             return SendPostAsync(
                 "api/internal/auth/refresh",
                 request,
-                cancellationToken);
+                cancellationToken,
+                dpopProof);
         }
 
         // ==========================================

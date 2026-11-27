@@ -1,4 +1,4 @@
-﻿//這個服務負責驗證：
+//這個服務負責驗證：
 //DPoP JWT 格式。
 //Header 的 typ 是否為 dpop+jwt。
 //簽章演算法是否為 ES256。
@@ -9,6 +9,8 @@
 // Nonce 是否有效。
 
 
+using Microsoft.Extensions.Caching.Memory;
+using Microsoft.IdentityModel.Tokens;
 using System;
 using System.Collections.Generic;
 using System.Globalization;
@@ -16,9 +18,6 @@ using System.IdentityModel.Tokens.Jwt;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
-
-using Microsoft.Extensions.Caching.Memory;
-using Microsoft.IdentityModel.Tokens;
 
 namespace vehicle_dispatch_api.Services.Auth
 {
@@ -51,8 +50,10 @@ namespace vehicle_dispatch_api.Services.Auth
             _cache = cache;
         }
 
+
         // ==========================================
-        // 驗證 DPoP Proof
+        // 原本 Login / Refresh 使用的驗證入口
+        // 不要求 ath，維持舊流程相容
         // ==========================================
 
         public bool ValidateProof(
@@ -61,6 +62,71 @@ namespace vehicle_dispatch_api.Services.Auth
             Guid phoneId,
             string expectedMethod,
             string expectedUri,
+            out string thumbprint,
+            out string error)
+        {
+            return ValidateProofCore(
+                proof,
+                storedPublicKeyBase64,
+                phoneId,
+                expectedMethod,
+                expectedUri,
+                null,
+                null,
+                out thumbprint,
+                out error);
+        }
+
+
+        // ==========================================
+        // Phase 8-4：資源 API 專用驗證入口
+        // 必須驗證 Access Token 綁定
+        // ==========================================
+
+        public bool ValidateAccessTokenProof(
+            string proof,
+            string storedPublicKeyBase64,
+            Guid phoneId,
+            string expectedMethod,
+            string expectedUri,
+            string accessToken,
+            string expectedJkt,
+            out string thumbprint,
+            out string error)
+        {
+            if (string.IsNullOrWhiteSpace(accessToken) ||
+                string.IsNullOrWhiteSpace(expectedJkt))
+            {
+                thumbprint = string.Empty;
+                error = "缺少 Access Token 或 DPoP Thumbprint";
+                return false;
+            }
+
+            return ValidateProofCore(
+                proof,
+                storedPublicKeyBase64,
+                phoneId,
+                expectedMethod,
+                expectedUri,
+                accessToken,
+                expectedJkt,
+                out thumbprint,
+                out error);
+        }
+
+
+        // ==========================================
+        // 驗證 DPoP Proof
+        // ==========================================
+
+        private bool ValidateProofCore(
+            string proof,
+            string storedPublicKeyBase64,
+            Guid phoneId,
+            string expectedMethod,
+            string expectedUri,
+            string? accessToken,
+            string? expectedJkt,
             out string thumbprint,
             out string error)
         {
@@ -81,13 +147,15 @@ namespace vehicle_dispatch_api.Services.Auth
                 }
 
                 // htu 必須是公開 HTTPS URL
+                var isDevelopment =
+                    Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT")== "Development";
                 if (!Uri.TryCreate(
-                    expectedUri,
-                    UriKind.Absolute,
-                    out var expectedUriObject) ||
-                    expectedUriObject.Scheme != Uri.UriSchemeHttps ||
-                    !string.IsNullOrEmpty(expectedUriObject.Query) ||
-                    !string.IsNullOrEmpty(expectedUriObject.Fragment))
+                        expectedUri,
+                        UriKind.Absolute,
+                        out var expectedUriObject) ||
+                    (expectedUriObject.Scheme != Uri.UriSchemeHttps &&
+                     !(isDevelopment &&
+                       expectedUriObject.Scheme == Uri.UriSchemeHttp)))
                 {
                     return Reject("伺服器 DPoP URL 設定不正確", out error);
                 }
@@ -220,33 +288,47 @@ namespace vehicle_dispatch_api.Services.Auth
                     return Reject("設備公鑰與資料庫不一致", out error);
                 }
 
-                // 6. 使用資料庫中的公鑰驗證 ES256
-                var securityKey =
-                    new ECDsaSecurityKey(storedEcdsa);
 
-                var validationParameters =
-                    new TokenValidationParameters
-                    {
-                        ValidateIssuer = false,
-                        ValidateAudience = false,
-                        ValidateLifetime = false,
+                // ==========================================
+                // 6. 使用資料庫 SPKI 公鑰直接驗證 ES256
+                // ==========================================
 
-                        RequireExpirationTime = false,
-                        RequireSignedTokens = true,
-                        ValidateIssuerSigningKey = true,
+                // ES256 JWT 必須使用 JOSE 格式：R(32) + S(32)
+                // .NET ECDsa 預設簽章格式需要明確指定。
 
-                        IssuerSigningKey = securityKey,
+                var jwtParts = proof.Split('.');
 
-                        ValidAlgorithms = new[]
-                        {
-                            SecurityAlgorithms.EcdsaSha256
-                        }
-                    };
+                if (jwtParts.Length != 3)
+                {
+                    return Reject("DPoP JWT 格式錯誤", out error);
+                }
 
-                handler.ValidateToken(
-                    proof,
-                    validationParameters,
-                    out _);
+                byte[] signingInput = Encoding.ASCII.GetBytes(
+                    jwtParts[0] + "." + jwtParts[1]);
+
+                byte[] joseSignature =
+                    Base64UrlEncoder.DecodeBytes(jwtParts[2]);
+
+                if (joseSignature.Length != 64)
+                {
+                    return Reject(
+                        $"ES256 簽章長度錯誤：{joseSignature.Length}",
+                        out error);
+                }
+
+                bool signatureValid = storedEcdsa.VerifyData(
+                    signingInput,
+                    joseSignature,
+                    HashAlgorithmName.SHA256,
+                    DSASignatureFormat.IeeeP1363FixedFieldConcatenation);
+
+                if (!signatureValid)
+                {
+                    return Reject(
+                        "ES256 簽章與資料庫設備公鑰不匹配",
+                        out error);
+                }
+
 
                 // 7. 計算 RFC 7638 JWK Thumbprint
                 // 使用標準化後的 Base64URL 座標
@@ -264,6 +346,61 @@ namespace vehicle_dispatch_api.Services.Auth
                     Encoding.UTF8.GetBytes(canonicalJwk));
 
                 thumbprint = Base64UrlEncoder.Encode(thumbprintHash);
+
+
+                // ==========================================
+                // Phase 8-4：Access Token 綁定驗證
+                // ==========================================
+
+                // Login / Refresh 不提供 Access Token
+                // 因此只在資源 API 請求時執行。
+
+                if (accessToken != null && expectedJkt != null)
+                {
+                    // 1. 驗證 cnf.jkt
+                    // 確認 Proof 使用的設備公鑰
+                    // 與 Access Token 綁定的公鑰相同。
+
+                    if (!FixedTimeEqualsText(
+                        thumbprint,
+                        expectedJkt))
+                    {
+                        return Reject(
+                            "DPoP 公鑰與 Access Token 綁定不一致",
+                            out error);
+                    }
+
+                    // 2. 計算 Access Token SHA256
+
+                    byte[] accessTokenHash = SHA256.HashData(
+                        Encoding.ASCII.GetBytes(accessToken));
+
+                    string expectedAth =
+                        Base64UrlEncoder.Encode(accessTokenHash);
+
+                    // 3. 取得 DPoP Payload ath
+
+                    string actualAth = GetClaim(jwt, "ath");
+
+                    if (string.IsNullOrWhiteSpace(actualAth))
+                    {
+                        return Reject(
+                            "DPoP Proof 缺少 ath",
+                            out error);
+                    }
+
+                    // 4. 比對 ath
+
+                    if (!FixedTimeEqualsText(
+                        expectedAth,
+                        actualAth))
+                    {
+                        return Reject(
+                            "Access Token ath 驗證失敗",
+                            out error);
+                    }
+                }
+
 
                 // 8. 驗證 Payload
                 string jti = GetClaim(jwt, "jti");
@@ -322,11 +459,24 @@ namespace vehicle_dispatch_api.Services.Auth
                 }
 
                 // 10. 驗證 HTTP URI
+                //if (!string.Equals(
+                //    htu,
+                //    expectedUri,
+                //    StringComparison.Ordinal))
+                //{
+                //    return Reject("HTTP URI 不一致", out error);
+                //}
+
                 if (!string.Equals(
                     htu,
                     expectedUri,
                     StringComparison.Ordinal))
                 {
+                    Console.WriteLine("========== DPoP URI DEBUG ==========");
+                    Console.WriteLine($"Proof htu : [{htu}]");
+                    Console.WriteLine($"Expected  : [{expectedUri}]");
+                    Console.WriteLine("====================================");
+
                     return Reject("HTTP URI 不一致", out error);
                 }
 
@@ -391,6 +541,38 @@ namespace vehicle_dispatch_api.Services.Auth
                 return Reject("DPoP 驗證發生未預期錯誤", out error);
             }
         }
+
+        // ==========================================
+        // 固定時間字串比對
+        // 避免一般字串比較造成時間差異
+        // ==========================================
+
+        private static bool FixedTimeEqualsText(
+            string expected,
+            string actual)
+        {
+            if (string.IsNullOrEmpty(expected) ||
+                string.IsNullOrEmpty(actual))
+            {
+                return false;
+            }
+
+            byte[] expectedBytes =
+                Encoding.UTF8.GetBytes(expected);
+
+            byte[] actualBytes =
+                Encoding.UTF8.GetBytes(actual);
+
+            if (expectedBytes.Length != actualBytes.Length)
+            {
+                return false;
+            }
+
+            return CryptographicOperations.FixedTimeEquals(
+                expectedBytes,
+                actualBytes);
+        }
+
 
         // ==========================================
         // 統一錯誤回傳

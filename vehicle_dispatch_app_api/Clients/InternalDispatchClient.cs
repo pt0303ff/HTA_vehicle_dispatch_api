@@ -1,4 +1,4 @@
-﻿using vehicle_dispatch_app_api.DTOs;
+﻿
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
@@ -18,110 +18,24 @@ public class InternalDispatchClient
         _configuration = configuration;
     }
 
+    // ==========================================
+    // 共用：建立內網 API Request
+    // ==========================================
 
-    // ==================================================
-    // GET：取得司機任務
-    // ==================================================
-
-    public async Task<HttpResponseMessage> GetTasksAsync(
-        Guid driverId,
-        CancellationToken cancellationToken = default)
-    {
-        var apiKey =
-            _configuration["InternalApi:ApiKey"];
-
-        if (string.IsNullOrWhiteSpace(apiKey))
-        {
-            throw new InvalidOperationException(
-                "找不到 InternalApi:ApiKey 設定");
-        }
-
-
-        using var request =
-            new HttpRequestMessage(
-                HttpMethod.Get,
-                "api/internal/dispatch/tasks");
-
-
-        request.Headers.Add(
-            "X-Internal-Api-Key",
-            apiKey);
-
-        request.Headers.Add(
-            "X-Driver-Id",
-            driverId.ToString());
-
-
-        return await _httpClient.SendAsync(
-            request,
-            HttpCompletionOption.ResponseHeadersRead,
-            cancellationToken);
-    }
-
-    // ==================================================
-    // GET：取得單筆任務詳細資訊
-    // ==================================================
-
-    public async Task<HttpResponseMessage> GetTaskDetailAsync(
-        string dispatchNo,
-        Guid driverId,
-        CancellationToken cancellationToken = default)
-    {
-        var apiKey =
-            _configuration["InternalApi:ApiKey"];
-
-        if (string.IsNullOrWhiteSpace(apiKey))
-        {
-            throw new InvalidOperationException(
-                "找不到 InternalApi:ApiKey 設定");
-        }
-
-        using var request = new HttpRequestMessage(
-            HttpMethod.Get,
-            $"api/internal/dispatch/tasks/{Uri.EscapeDataString(dispatchNo)}"
-        );
-
-        request.Headers.Add(
-            "X-Internal-Api-Key",
-            apiKey);
-
-        request.Headers.Add(
-            "X-Driver-Id",
-            driverId.ToString());
-
-        return await _httpClient.SendAsync(
-            request,
-            HttpCompletionOption.ResponseHeadersRead,
-            cancellationToken);
-    }
-
-    // ==================================================
-    // POST：同步任務執行資料至內網 API
-    // ==================================================
-
-    public async Task<HttpResponseMessage> SyncExecutionAsync(
-        JsonElement payload,
+    private HttpRequestMessage CreateRequest(
+        HttpMethod method,
+        string path,
         string authorizationHeader,
-        CancellationToken cancellationToken = default)
+        string dpopProof,
+        string originalUri,
+        Guid? driverId = null)
     {
-        // 1. 取得內部服務驗證 Key
-        var apiKey =
-            _configuration["InternalApi:ApiKey"];
+        var apiKey = _configuration["InternalApi:ApiKey"];
 
         if (string.IsNullOrWhiteSpace(apiKey))
-        {
             throw new InvalidOperationException(
                 "找不到 InternalApi:ApiKey 設定");
-        }
 
-        // 2. 確認傳入資料是 JSON Object
-        if (payload.ValueKind != JsonValueKind.Object)
-        {
-            throw new ArgumentException(
-                "同步資料必須是 JSON Object");
-        }
-
-        // 3. 確認 Bearer Token
         if (!AuthenticationHeaderValue.TryParse(
                 authorizationHeader,
                 out var authorization) ||
@@ -131,31 +45,121 @@ public class InternalDispatchClient
                 StringComparison.OrdinalIgnoreCase) ||
             string.IsNullOrWhiteSpace(authorization.Parameter))
         {
-            throw new ArgumentException(
-                "Authorization Bearer Token 格式錯誤");
+            throw new ArgumentException("JWT 格式錯誤");
         }
 
-        // 4. 建立 POST Request
-        using var request = new HttpRequestMessage(
-            HttpMethod.Post,
-            "api/internal/dispatch/sync");
+        if (string.IsNullOrWhiteSpace(dpopProof))
+            throw new ArgumentException("DPoP Proof 不可為空");
 
-        // 5. 加入內部服務驗證 Key
-        request.Headers.Add(
-            "X-Internal-Api-Key",
-            apiKey);
+        if (!Uri.TryCreate(
+                originalUri,
+                UriKind.Absolute,
+                out var uri) ||
+            uri.Query.Length > 0 ||
+            uri.Fragment.Length > 0)
+        {
+            throw new ArgumentException("原始公開 URI 格式錯誤");
+        }
 
-        // 6. 轉送 APP 原始 JWT
+        var request = new HttpRequestMessage(method, path);
+
         request.Headers.Authorization = authorization;
 
-        // 7. 將完整 JSON 資料放入 Body
-        request.Content = JsonContent.Create(payload);
+        request.Headers.Add("X-Internal-Api-Key", apiKey);
+        request.Headers.Add("DPoP", dpopProof);
+        request.Headers.Add("X-Original-Method", method.Method);
+        request.Headers.Add("X-Original-Uri", originalUri);
 
-        // 8. 發送至內網 API
+        if (driverId.HasValue)
+        {
+            request.Headers.Add(
+                "X-Driver-Id",
+                driverId.Value.ToString());
+        }
+
+        return request;
+    }
+
+    // ==========================================
+    // GET：取得司機任務
+    // ==========================================
+
+    public async Task<HttpResponseMessage> GetTasksAsync(
+        Guid driverId,
+        string authorizationHeader,
+        string dpopProof,
+        string originalUri,
+        CancellationToken cancellationToken = default)
+    {
+        using var request = CreateRequest(
+            HttpMethod.Get,
+            "api/internal/dispatch/tasks",
+            authorizationHeader,
+            dpopProof,
+            originalUri,
+            driverId);
+
         return await _httpClient.SendAsync(
             request,
             HttpCompletionOption.ResponseHeadersRead,
             cancellationToken);
     }
 
+    // ==========================================
+    // GET：取得任務詳細資訊
+    // ==========================================
+
+    public async Task<HttpResponseMessage> GetTaskDetailAsync(
+        string dispatchNo,
+        Guid driverId,
+        string authorizationHeader,
+        string dpopProof,
+        string originalUri,
+        CancellationToken cancellationToken = default)
+    {
+        var path =
+            $"api/internal/dispatch/tasks/{Uri.EscapeDataString(dispatchNo)}";
+
+        using var request = CreateRequest(
+            HttpMethod.Get,
+            path,
+            authorizationHeader,
+            dpopProof,
+            originalUri,
+            driverId);
+
+        return await _httpClient.SendAsync(
+            request,
+            HttpCompletionOption.ResponseHeadersRead,
+            cancellationToken);
+    }
+
+    // ==========================================
+    // POST：同步任務執行資料
+    // ==========================================
+
+    public async Task<HttpResponseMessage> SyncExecutionAsync(
+        JsonElement payload,
+        string authorizationHeader,
+        string dpopProof,
+        string originalUri,
+        CancellationToken cancellationToken = default)
+    {
+        if (payload.ValueKind != JsonValueKind.Object)
+            throw new ArgumentException("同步資料必須是 JSON Object");
+
+        using var request = CreateRequest(
+            HttpMethod.Post,
+            "api/internal/dispatch/sync",
+            authorizationHeader,
+            dpopProof,
+            originalUri);
+
+        request.Content = JsonContent.Create(payload);
+
+        return await _httpClient.SendAsync(
+            request,
+            HttpCompletionOption.ResponseHeadersRead,
+            cancellationToken);
+    }
 }

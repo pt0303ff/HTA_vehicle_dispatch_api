@@ -165,7 +165,8 @@ namespace vehicle_dispatch_api.Services.Auth
                     x =>
                         x.PhoneId == phoneId.Value &&
                         x.DriverId == driver.DriverId &&
-                        x.Status == DriverAppPhone.StatusBound,
+                        x.Status == DriverAppPhone.StatusBound&&
+                        x.RevokedAt == null,
                     cancellationToken);
 
             if (phone == null ||

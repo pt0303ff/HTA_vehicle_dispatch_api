@@ -2,7 +2,9 @@
 using System.Net;
 using System.Linq;
 using System.Text.Json;
+using System.Net.Http.Headers;
 
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
 using vehicle_dispatch_app_api.Clients;
@@ -107,7 +109,6 @@ namespace vehicle_dispatch_app_api.Controllers
             [FromBody] DriverRefreshRequest request,
             CancellationToken cancellationToken)
         {
-            // DPoP Proof 必須存在
             if (string.IsNullOrWhiteSpace(dpopProof))
             {
                 return Task.FromResult<IActionResult>(
@@ -127,23 +128,101 @@ namespace vehicle_dispatch_app_api.Controllers
                 cancellationToken);
         }
 
+
         // ==========================================
         // 5. POST: api/auth/logout
-        // 司機登出
+        // JWT + DPoP 司機登出
         // ==========================================
 
+        [Authorize]
         [HttpPost("logout")]
         public Task<IActionResult> Logout(
+            [FromHeader(Name = "Authorization")]
+    string? authorizationHeader,
+
+            [FromHeader(Name = "DPoP")]
+    string? dpopProof,
+
             [FromBody] DriverLogoutRequest request,
+
             CancellationToken cancellationToken)
         {
+            // ==========================================
+            // 1. 驗證 Authorization Header
+            // ==========================================
+
+            if (!System.Net.Http.Headers.AuthenticationHeaderValue.TryParse(
+                    authorizationHeader,
+                    out var authorization) ||
+                !string.Equals(
+                    authorization.Scheme,
+                    "Bearer",
+                    StringComparison.OrdinalIgnoreCase) ||
+                string.IsNullOrWhiteSpace(
+                    authorization.Parameter))
+            {
+                return Task.FromResult<IActionResult>(
+                    Unauthorized(new
+                    {
+                        success = false,
+                        message = "缺少或無效的 JWT Token"
+                    }));
+            }
+
+            // ==========================================
+            // 2. 驗證 DPoP Proof
+            // ==========================================
+
+            if (string.IsNullOrWhiteSpace(dpopProof))
+            {
+                return Task.FromResult<IActionResult>(
+                    Unauthorized(new
+                    {
+                        success = false,
+                        message = "缺少 DPoP Proof"
+                    }));
+            }
+
+            // ==========================================
+            // 3. 驗證 Refresh Token
+            // ==========================================
+
+            if (request == null ||
+                string.IsNullOrWhiteSpace(request.RefreshToken))
+            {
+                return Task.FromResult<IActionResult>(
+                    BadRequest(new
+                    {
+                        success = false,
+                        message = "Refresh Token 不可為空"
+                    }));
+            }
+
+            // ==========================================
+            // 4. 取得 APP 原始公開 URI
+            // DPoP htu 不包含 Query String
+            // ==========================================
+
+            var originalUri =
+                $"{Request.Scheme}://{Request.Host}" +
+                $"{Request.PathBase}{Request.Path}";
+
+            // ==========================================
+            // 5. 轉送內網
+            // ==========================================
+
             return ForwardAsync(
                 () => _internalAuthClient.LogoutAsync(
                     request,
+                    authorizationHeader!,
+                    dpopProof,
+                    originalUri,
                     cancellationToken),
                 "司機登出",
-                cancellationToken);
+                cancellationToken,
+                forwardDpopNonce: true);
         }
+
 
         // ==========================================
         // 共用：轉送內網 API 回應
@@ -159,13 +238,12 @@ namespace vehicle_dispatch_app_api.Controllers
             {
                 using var response = await sendRequest();
 
-                // 讀取內網 API JSON
                 var responseBody =
                     await response.Content.ReadAsStringAsync(
                         cancellationToken);
 
                 // ==========================================
-                // 轉送 DPoP-Nonce Response Header
+                // 轉送 DPoP Nonce
                 // ==========================================
 
                 if (forwardDpopNonce &&
@@ -175,6 +253,31 @@ namespace vehicle_dispatch_app_api.Controllers
                 {
                     Response.Headers["DPoP-Nonce"] =
                         nonceValues.FirstOrDefault();
+                }
+
+                // ==========================================
+                // 轉送 DPoP Challenge
+                // ==========================================
+
+                if (forwardDpopNonce &&
+                    response.Headers.TryGetValues(
+                        "WWW-Authenticate",
+                        out var challengeValues))
+                {
+                    Response.Headers["WWW-Authenticate"] =
+                        challengeValues.ToArray();
+                }
+
+                // ==========================================
+                // 轉送 Retry-After（如果存在）
+                // ==========================================
+
+                if (response.Headers.TryGetValues(
+                        "Retry-After",
+                        out var retryValues))
+                {
+                    Response.Headers["Retry-After"] =
+                        retryValues.ToArray();
                 }
 
                 // ==========================================

@@ -4,6 +4,8 @@ using System.Security.Cryptography;
 using System.Text;
 
 using Microsoft.AspNetCore.Mvc;
+using System.Security.Claims;
+using Microsoft.AspNetCore.Authorization;
 
 using vehicle_dispatch_api.DTOs.Auth;
 using vehicle_dispatch_api.Services.Auth;
@@ -524,15 +526,26 @@ namespace vehicle_dispatch_api.Controllers
         // 司機登出
         // ==========================================
 
+
+        // ==========================================
+        // POST: api/internal/auth/logout
+        // JWT + DPoP 司機登出
+        // ==========================================
+
+        [Authorize]
         [HttpPost("logout")]
         public async Task<IActionResult> Logout(
             [FromHeader(Name = "X-Internal-Api-Key")]
-            string? suppliedKey,
+    string? suppliedKey,
 
             [FromBody] DriverLogoutRequest request,
 
             CancellationToken cancellationToken)
         {
+            // ==========================================
+            // 1. 確認 Internal API Key
+            // ==========================================
+
             var expectedKey =
                 _configuration["InternalApi:ApiKey"];
 
@@ -550,6 +563,54 @@ namespace vehicle_dispatch_api.Controllers
                 });
             }
 
+            // ==========================================
+            // 2. 確認 JWT 身分
+            // ==========================================
+
+            var driverIdValue =
+                User.FindFirst("sub")?.Value;
+
+            var sessionIdValue =
+                User.FindFirst("session_id")?.Value;
+
+            var phoneIdValue =
+                User.FindFirst("phone_id")?.Value;
+
+            var tokenType =
+                User.FindFirst("token_type")?.Value;
+
+            if (tokenType != "access" ||
+                !Guid.TryParse(driverIdValue, out var driverId) ||
+                !Guid.TryParse(sessionIdValue, out var sessionId) ||
+                !Guid.TryParse(phoneIdValue, out var phoneId) ||
+                driverId == Guid.Empty ||
+                sessionId == Guid.Empty ||
+                phoneId == Guid.Empty)
+            {
+                return Unauthorized(new
+                {
+                    success = false,
+                    message = "JWT 身分資訊無效"
+                });
+            }
+
+            // ==========================================
+            // 3. 確認 DPoP Middleware 已完成驗證
+            // ==========================================
+
+            if (HttpContext.Items["DpopValidated"] is not true)
+            {
+                return Unauthorized(new
+                {
+                    success = false,
+                    message = "DPoP 尚未通過驗證"
+                });
+            }
+
+            // ==========================================
+            // 4. 檢查 Refresh Token
+            // ==========================================
+
             if (request == null ||
                 string.IsNullOrWhiteSpace(request.RefreshToken))
             {
@@ -560,11 +621,18 @@ namespace vehicle_dispatch_api.Controllers
                 });
             }
 
+            // ==========================================
+            // 5. 執行登出
+            // ==========================================
+
             try
             {
                 bool success =
                     await _logoutService.LogoutAsync(
                         request.RefreshToken,
+                        driverId,
+                        sessionId,
+                        phoneId,
                         cancellationToken);
 
                 if (!success)
@@ -572,7 +640,7 @@ namespace vehicle_dispatch_api.Controllers
                     return Unauthorized(new
                     {
                         success = false,
-                        message = "Refresh Token 無效"
+                        message = "Refresh Token 無效，或與目前登入 Session 不一致"
                     });
                 }
 
@@ -591,7 +659,9 @@ namespace vehicle_dispatch_api.Controllers
             {
                 _logger.LogError(
                     ex,
-                    "司機登出時發生錯誤");
+                    "司機登出時發生錯誤，DriverId={DriverId}, SessionId={SessionId}",
+                    driverId,
+                    sessionId);
 
                 return StatusCode(500, new
                 {
@@ -600,5 +670,6 @@ namespace vehicle_dispatch_api.Controllers
                 });
             }
         }
+
     }
 }

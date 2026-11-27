@@ -263,7 +263,8 @@ namespace vehicle_dispatch_api.Services.Auth
             // 8. 確認手機設備仍然有效
             // ==========================================
 
-            if (phone.Status != DriverAppPhone.StatusBound)
+            if (phone.Status != DriverAppPhone.StatusBound ||
+               phone.RevokedAt.HasValue)
             {
                 await RevokeSessionAsync(
                     session,
